@@ -1,0 +1,29 @@
+CAMARA VS - camara estilo Virtua Striker para Winning Eleven 9 y WE9 Liveware Evolution (PC)
+Modulo gratuito para Kitserver 5. https://github.com/meteoro1983/camara-vs
+
+INSTALAR
+  1. Copia TODOS estos archivos dentro de la carpeta "kitserver" del juego
+     (donde estan kload.cfg y kserv.dll).
+  2. Ejecuta instalar.bat (agrega el modulo a kload.cfg y guarda un respaldo).
+  3. Juga un partido: la camara VS arranca activa.
+  Actualizar: copia solo camara_vs.dll encima (asi conservas tu camara_vs.ini).
+  Desinstalar: desinstalar.bat
+
+TECLAS (con el juego en foco)
+  F9         activar / desactivar
+  F7 / F8    altura - / +
+  F10 / F11  distancia - / +
+  F3 / F4    zoom mas abierto / mas cerrado
+  F6         suavidad del travelling
+  Los ajustes se guardan solos en camara_vs.ini.
+
+SIN KITSERVER
+  Con el juego abierto, ejecuta inyectar.exe (cada vez que abras el juego).
+
+PROBLEMAS
+  Mira camara_vs.log (se crea al lado de la DLL al abrir el juego).
+
+---------------------------------------------------------------------------
+INSTALL: copy all these files into the game's "kitserver" folder and run
+instalar.bat. Keys: F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom,
+F6 smoothing. Without Kitserver: run inyectar.exe with the game open.

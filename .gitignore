@@ -1,0 +1,5 @@
+dist/
+*.obj
+*.exp
+*.lib
+*.log
