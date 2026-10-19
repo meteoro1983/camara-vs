@@ -71,6 +71,12 @@ Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar
 
 Todo se ubica **por firmas** (patrones de bytes) y no por direcciones fijas, así que debería andar también con exes parcheados. Si no encuentra algo, lo dice en `camara_vs.log` (junto a la DLL) y deja la cámara del juego.
 
+## Próximas versiones
+
+- Giros más **flotantes**, tipo steadycam o gimbal, como en VS: hoy los giros chicos todavía se sienten un poco duros.
+- Tomas propias para córners y tiros libres.
+- Port a **Winning Eleven 7** y **PES6**.
+
 ## Cómo funciona (para curiosos)
 
 La cámara del juego vive en una estructura en memoria (ojo, objetivo, zoom, plano lejano). No se puede escribir ahí directamente: el director de cámaras del juego suaviza a partir de esos valores y terminaría "peleando" con la nuestra. Por eso el módulo envuelve la función que arma la matriz de vista: al entrar guarda la cámara del juego y pone la nuestra; al salir devuelve la del juego. El juego nunca ve nuestra cámara, solo la pantalla.
