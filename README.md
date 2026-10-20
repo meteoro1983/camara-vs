@@ -1,4 +1,5 @@
 # Cámara VS
+n![Cámara VS](docs/flyer.jpg)
 
 **Cámara de juego estilo Virtua Striker para Winning Eleven 9 y Winning Eleven 9 Liveware Evolution (PC).**
 Módulo gratuito para **Kitserver 5**. Hecho por y para la comunidad WE9.
