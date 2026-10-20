@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VERSION "1.0.0"
+#define VERSION "1.1.0"
 #define M 256.0f
 
 /* ---------------------------------------------------------------- firmas */
@@ -124,7 +124,7 @@ typedef struct {
     float altura, distancia, mira, retraso, adelanto, giro, centrado, zoom;
     int activa;
     int t_activar, t_altura_menos, t_altura_mas, t_dist_menos, t_dist_mas,
-        t_zoom_abrir, t_zoom_cerrar, t_retraso;
+        t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar;
 } Ajustes;
 static Ajustes A;
 
@@ -146,15 +146,23 @@ static void ini_guardar(const char *clave, float v) {
     WritePrivateProfileStringA("camara", clave, s, g_ini);
 }
 
+/* Configuracion estandar de Camara VS (la que restablece F5). */
+static const struct { const char *clave; float valor; } ESTANDAR[] = {
+    {"altura", 11.0f},     /* m sobre el piso */
+    {"distancia", 10.0f},  /* m detras de la linea de costado */
+    {"mira", 0.0f},        /* m por delante de la pelota hacia el lado lejano */
+    {"retraso", 0.35f},    /* s de retraso del travelling */
+    {"adelanto", 0.3f},    /* s que se adelanta el objetivo segun la velocidad */
+    {"giro", 0.2f},        /* giro lateral maximo cerca de los arcos */
+    {"centrado", 2.5f},    /* s de posesion para acomodarse de frente */
+    {"zoom", 470.0f},      /* foco: menos = mas abierto */
+};
+#define N_ESTANDAR (sizeof(ESTANDAR) / sizeof(ESTANDAR[0]))
+
 static void leer_ajustes(void) {
-    A.altura    = ini_f("altura", 11.0f);     /* m sobre el piso */
-    A.distancia = ini_f("distancia", 10.0f);  /* m detras de la linea de costado */
-    A.mira      = ini_f("mira", 0.0f);        /* m por delante de la pelota hacia el lado lejano */
-    A.retraso   = ini_f("retraso", 0.35f);    /* s de retraso del travelling */
-    A.adelanto  = ini_f("adelanto", 0.25f);   /* s que se adelanta el objetivo segun la velocidad */
-    A.giro      = ini_f("giro", 0.35f);       /* giro lateral maximo cerca de los arcos */
-    A.centrado  = ini_f("centrado", 2.5f);    /* s de posesion para acomodarse de frente */
-    A.zoom      = ini_f("zoom", 470.0f);      /* foco: menos = mas abierto */
+    float *v[N_ESTANDAR] = {&A.altura, &A.distancia, &A.mira, &A.retraso, &A.adelanto, &A.giro, &A.centrado, &A.zoom};
+    unsigned i;
+    for (i = 0; i < N_ESTANDAR; i++) *v[i] = ini_f(ESTANDAR[i].clave, ESTANDAR[i].valor);
     A.activa    = GetPrivateProfileIntA("camara", "activa", 1, g_ini);
     A.t_activar      = ini_tecla("activar", VK_F9);
     A.t_altura_menos = ini_tecla("altura_menos", VK_F7);
@@ -164,6 +172,7 @@ static void leer_ajustes(void) {
     A.t_zoom_abrir   = ini_tecla("zoom_abrir", VK_F3);
     A.t_zoom_cerrar  = ini_tecla("zoom_cerrar", VK_F4);
     A.t_retraso      = ini_tecla("retraso", VK_F6);
+    A.t_estandar     = ini_tecla("estandar", VK_F5);
 }
 
 /* ---------------------------------------------------------------- estado del juego */
@@ -196,11 +205,21 @@ static int g_estadio_puesto = -1;
 
 static struct {
     int iniciado, modo_ant, dueno_ant;
-    float s_obj[3], s_ojo[3], giro, posesion, en_manos_t;
+    float s_obj[3], s_ojo[3], v_obj[3], v_ojo[3], vel_f[3], pel_ant[3], giro, posesion, en_manos_t, lado, lado_t;
     LARGE_INTEGER antes;
 } S;
 
 static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
+
+/* Resorte con amortiguacion critica (SmoothDamp): a diferencia del filtro exponencial, arranca
+ * y frena con aceleracion, sin tirones; es lo que da el movimiento flotante tipo gimbal. */
+static void resorte(float *x, float *v, float meta, float t, float dt) {
+    float w = 2.0f / (t > 0.01f ? t : 0.01f), a = w * dt;
+    float e = 1.0f / (1.0f + a + 0.48f * a * a + 0.235f * a * a * a);
+    float c = *x - meta, tmp = (*v + w * c) * dt;
+    *v = (*v - w * tmp) * e;
+    *x = meta + (c + tmp) * e;
+}
 
 static int tecla(int vk) {
     static BYTE abajo[256];
@@ -253,6 +272,11 @@ static void teclas(void) {
         for (i = 0; i < 4; i++) if (fabsf(A.retraso - r[i]) < 0.01f) sig = (i + 1) % 4;
         A.retraso = r[sig]; ini_guardar("retraso", A.retraso);
     }
+    if (tecla(A.t_estandar)) {
+        unsigned i;
+        for (i = 0; i < N_ESTANDAR; i++) ini_guardar(ESTANDAR[i].clave, ESTANDAR[i].valor);
+        leer_ajustes(); S.iniciado = 0;
+    }
 }
 
 /* Calcula nuestra camara a partir de la del juego (g_juego) y la pelota. Devuelve 1 si va. */
@@ -278,7 +302,15 @@ static int calcular(void) {
             memcpy(pel, p, sizeof pel); memcpy(ant, p + 3, sizeof ant);
         }
     }
+    /* Pelota recolocada (falta, saque del medio, despues de un gol): corte, como en la TV,
+     * en vez de un paneo largo a traves de la cancha. */
+    if (fabsf(pel[0] - S.pel_ant[0]) + fabsf(pel[2] - S.pel_ant[2]) > 8.0f * M) S.iniciado = 0;
+    memcpy(S.pel_ant, pel, sizeof pel);
     for (i = 0; i < 3; i++) vel[i] = (pel[i] - ant[i]) * 60.0f;   /* unidades por segundo */
+    /* La anticipacion usa la velocidad filtrada: la cruda salta con cada toque. */
+    if (!S.iniciado) memcpy(S.vel_f, vel, sizeof vel);
+    k = 1.0f - expf(-dt / 0.15f);
+    for (i = 0; i < 3; i++) S.vel_f[i] += (vel[i] - S.vel_f[i]) * k;
     rapidez = sqrtf(vel[0] * vel[0] + vel[2] * vel[2]) / M;      /* m/s en el plano */
     fase = *g_fase;
     dueno = *g_toque;
@@ -299,22 +331,34 @@ static int calcular(void) {
     S.en_manos_t = en_manos ? S.en_manos_t + dt : 0.0f;
     S.modo_ant = modo;
 
-    q_obj[0] = pel[0] + vel[0] * A.adelanto;
+    q_obj[0] = pel[0] + S.vel_f[0] * A.adelanto;
     q_obj[1] = 0.5f * pel[1] - 0.5f * M;
-    q_obj[2] = pel[2] + vel[2] * A.adelanto;
+    q_obj[2] = pel[2] + S.vel_f[2] * A.adelanto;
     if (modo == LATERAL) {
         float afuera = pel[2] > 0 ? 1.0f : -1.0f;
         q_obj[0] = pel[0]; q_obj[1] = -1.2f * M; q_obj[2] = pel[2] - afuera * 15.0f * M;
     }
-    if (!S.iniciado) memcpy(S.s_obj, q_obj, sizeof q_obj);
+    if (!S.iniciado) { memcpy(S.s_obj, q_obj, sizeof q_obj); memset(S.v_obj, 0, sizeof S.v_obj); }
     retraso = modo == JUEGO ? A.retraso : 0.45f;
-    k = 1.0f - expf(-dt / (retraso > 0.01f ? retraso : 0.01f));
-    for (i = 0; i < 3; i++) S.s_obj[i] += (q_obj[i] - S.s_obj[i]) * k;
+    /* Movimientos chicos flotan; si la pelota se escapa del cuadro el travelling acelera. */
+    {
+        float err = (fabsf(q_obj[0] - S.s_obj[0]) + fabsf(q_obj[2] - S.s_obj[2])) / M;
+        retraso /= 1.0f + (err > 4.0f ? (err - 4.0f) / 5.0f : 0.0f);
+    }
+    for (i = 0; i < 3; i++) resorte(&S.s_obj[i], &S.v_obj[i], q_obj[i], retraso, dt);
 
     /* Ojo: del lado de la transmision del juego, siguiendo a la pelota a lo largo de la cancha.
      * Giro lateral (steadycam): cerca de un arco el ojo se corre hacia el centro; mientras el
      * mismo jugador conserva la pelota se acomoda de frente. */
+    /* Lado de la transmision, tomado de la camara del juego solo con la pelota en juego y si se
+     * sostiene 1,5 s: en faltas y saques del medio el juego se pone detras del que patea. */
     lado = g_juego[2] >= g_juego[5] ? 1.0f : -1.0f;
+    if (S.lado == 0.0f) S.lado = lado;
+    if (lado != S.lado && fase == 1 && modo == JUEGO) {
+        S.lado_t += dt;
+        if (S.lado_t > 1.5f) { S.lado = lado; S.lado_t = 0.0f; }
+    } else S.lado_t = 0.0f;
+    lado = S.lado;
     if (dueno != S.dueno_ant) { S.dueno_ant = dueno; S.posesion = 0.0f; }
     S.posesion += dt;
     lado_cancha = clampf(S.s_obj[0] / (MEDIO_LARGO_M * M), -1.0f, 1.0f);
@@ -336,10 +380,9 @@ static int calcular(void) {
         q_ojo[0] = pel[0]; q_ojo[1] = -2.5f * M; q_ojo[2] = pel[2] + afuera * 6.0f * M;
         memcpy(mira, S.s_obj, sizeof mira);
     }
-    if (!S.iniciado) memcpy(S.s_ojo, q_ojo, sizeof q_ojo);
+    if (!S.iniciado) { memcpy(S.s_ojo, q_ojo, sizeof q_ojo); memset(S.v_ojo, 0, sizeof S.v_ojo); }
     S.iniciado = 1;
-    k = 1.0f - expf(-dt / (retraso * 1.4f > 0.01f ? retraso * 1.4f : 0.01f));
-    for (i = 0; i < 3; i++) S.s_ojo[i] += (q_ojo[i] - S.s_ojo[i]) * k;
+    for (i = 0; i < 3; i++) resorte(&S.s_ojo[i], &S.v_ojo[i], q_ojo[i], retraso * 1.4f, dt);
 
     /* Zoom compensado por la distancia real: jugadores de tamano parecido en toda la cancha. */
     dist = sqrtf((S.s_ojo[0] - mira[0]) * (S.s_ojo[0] - mira[0]) + (S.s_ojo[1] - mira[1]) * (S.s_ojo[1] - mira[1]) +

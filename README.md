@@ -57,6 +57,7 @@ Con el juego abierto, ejecutá `inyectar.exe` (en la misma carpeta que `camara_v
 | F10 / F11 | Distancia del riel − / + 2 m |
 | F3 / F4 | Zoom más abierto / más cerrado |
 | F6 | Suavidad del travelling (0,2 · 0,35 · 0,6 · 1 s) |
+| F5 | Volver a la configuración estándar de Cámara VS |
 
 Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar las teclas y otros valores (giro, anticipación, tiempo de acomodo).
 
@@ -71,9 +72,17 @@ Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar
 
 Todo se ubica **por firmas** (patrones de bytes) y no por direcciones fijas, así que debería andar también con exes parcheados. Si no encuentra algo, lo dice en `camara_vs.log` (junto a la DLL) y deja la cámara del juego.
 
+## Novedades 1.1.0
+
+- Movimiento **flotante tipo gimbal**: el travelling arranca y frena con suavidad, y la anticipación usa la velocidad filtrada de la pelota.
+- Si la pelota se escapa del cuadro, el travelling acelera solo para alcanzarla.
+- Ya no se invierte el ángulo en faltas ni en el saque del medio; cuando la pelota se recoloca, la cámara corta como en la TV.
+- Giro lateral más leve cerca de los arcos.
+- **F5** vuelve a la configuración estándar.
+
 ## Próximas versiones
 
-- Giros más **flotantes**, tipo steadycam o gimbal, como en VS: hoy los giros chicos todavía se sienten un poco duros.
+- Pequeño **overlay en pantalla** con las teclas para controlar la cámara.
 - Tomas propias para córners y tiros libres.
 - Port a **Winning Eleven 7** y **PES6**.
 
@@ -101,4 +110,4 @@ Licencia **MIT**: usalo, modificalo y compartilo libremente.
 **Virtua Striker–style match camera for Winning Eleven 9 and WE9 Liveware Evolution (PC), as a free Kitserver 5 module.**
 It follows the ball from a rail behind the touchline (like VS4), adds a gentle steadycam turn near the goals that recentres while a player keeps the ball, frames throw-ins over the taker's shoulder, and keeps the game's own camera for goalkeeper restarts, replays and cut-scenes. It also stops the game from hiding the sky and stands, which it decides from its own camera.
 
-**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.
+**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing, F5 back to defaults; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.
