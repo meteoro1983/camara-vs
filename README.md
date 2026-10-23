@@ -33,7 +33,10 @@ Funcionan con o sin la cámara VS activa, y con los estadios del juego o los de 
 
 - **Blur de tribunas estilo Virtua Striker**, anclado a las medidas reales de la cancha (105 × 68 m), no a la distancia de la cámara: del lado de enfrente empieza tenue 11 m adentro de la cancha, del lado de la cámara 2,5 m adentro y en los fondos 1 m antes de la línea de gol; crece hacia las tribunas en 6 anillos que se funden entre sí.
 - **Bruma:** un velo de aire muy leve sobre las tribunas altas, con el color de niebla que el juego usa en cada estadio y horario.
-- **Color:** saturación y contraste sutiles, solo en el mundo 3D.
+- **Color y nitidez:** saturación y contraste sutiles, nitidez suave y viñeta, solo en el mundo 3D.
+- **Cancha:** franjas de corte del césped, sombra del estadio sobre el lado lejano (solo de día) y un borde oscuro a ras del piso alrededor de la cancha, todo anclado en metros reales.
+- **Día y noche automático:** de noche se apaga la sombra y se suma un bloom sutil sobre las luces (calculado en cada cuadro).
+- **Filtrado anisotrópico** forzado (césped y líneas lejanas más definidos) y un leve tinte del cielo.
 - El marcador, los nombres y el resto del HUD quedan siempre nítidos y sin tocar.
 - **Guía en pantalla** arriba al centro, entre los recuadros del marcador: esquema de la cancha con la cámara, hacia dónde mira y la pelota, y todas las teclas con sus valores.
 
@@ -75,10 +78,7 @@ Con el juego abierto, ejecutá `inyectar.exe` (en la misma carpeta que `camara_v
 | Av Pág / Re Pág | Giro steadycam hacia los arcos − / + (cerca: tercera persona; lejos: transmisión) |
 | F6 | Suavidad del travelling (0,2 · 0,35 · 0,6 · 1 s) |
 | F5 | Volver a la configuración estándar de Cámara VS |
-| **F2** | Blur de tribunas: apagado → preset 1 → preset 2 |
-| Insert | Bruma: apagada → preset 1 → preset 2 |
-| Inicio | Color sí / no |
-| Supr | Ver los anillos del blur en colores (para ajustar medidas) |
+| **F2** | Abrir / cerrar el **menú de efectos**: adentro, F3/F4 eligen y F7/F8 cambian el valor (mientras está abierto no mueven la cámara) |
 | **F1** | Fijar / ocultar la guía en pantalla (sola, aparece unos segundos al tocar cualquier tecla) |
 
 Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar las teclas y otros valores: giro, anticipación y tiempo de acomodo de la cámara; en `[efectos]`, dónde empieza el blur de cada lado (en metros), cuánto se mezcla y qué tan ancho es en cada anillo, la bruma y el color.
@@ -95,6 +95,13 @@ Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar
 Todo se ubica **por firmas** (patrones de bytes) y no por direcciones fijas, así que debería andar también con exes parcheados. Si no encuentra algo, lo dice en `camara_vs.log` (junto a la DLL) y deja la cámara del juego.
 
 Los efectos (blur, bruma, color y guía) necesitan **Kitserver** y andan tanto con la `d3d8.dll` de Windows como con **dgVoodoo**. Con `inyectar.exe`, sin Kitserver, solo funciona la cámara.
+
+## Novedades 1.2.2
+
+- **Menú de efectos (F2):** blur, bruma, color y nitidez, cancha, luces de noche, filtro anisotrópico y máscara de ajuste, sin teclas sueltas que se mezclen con las de la cámara.
+- **Nuevos efectos casi gratis:** filtrado anisotrópico, nitidez y viñeta, franjas de césped, sombra del estadio, borde oscuro alrededor de la cancha y tinte del cielo.
+- **Lateral en tercera persona:** en los laterales del lado de la cámara, la toma va detrás de la espalda del que saca y gira con él mientras apunta (necesita Kitserver, igual que los efectos).
+- **Día/noche automático:** de noche, bloom sutil sobre las luces; la sombra se apaga sola.
 
 ## Novedades 1.2.1
 
@@ -151,6 +158,6 @@ Licencia **MIT**: usalo, modificalo y compartilo libremente.
 
 **Virtua Striker–style match camera for Winning Eleven 9 and WE9 Liveware Evolution (PC), as a free Kitserver 5 module.**
 It follows the ball from a rail behind the touchline (like VS4), adds a gentle steadycam turn near the goals that recentres while a player keeps the ball, frames near-side throw-ins over the taker's shoulder, follows shots and crosses with a wider zoom, and keeps the game's own camera for goalkeeper restarts, replays and cut-scenes. It also stops the game from hiding the sky and stands, which it decides from its own camera.
-**New in 1.2:** Sega-arcade style **stand blur** anchored to the real pitch size (105 × 68 m, works with stock and Kitserver stadiums), subtle **haze** and **colour grading** (3D world only, the HUD stays sharp), and an **on-screen guide**. F2 blur, Insert haze, Home colour, F1 guide, PgUp/PgDn goal-facing steadycam turn. Effects need Kitserver; they work with Windows' d3d8 and with dgVoodoo.
+**New in 1.2:** Sega-arcade style **stand blur** anchored to the real pitch size (105 × 68 m, works with stock and Kitserver stadiums), subtle **haze** and **colour grading** (3D world only, the HUD stays sharp), and an **on-screen guide**. F2 opens the effects menu, F1 guide, PgUp/PgDn goal-facing steadycam turn. **1.2.2** adds anisotropic filtering, sharpening and vignette, grass stripes, stadium shadow, a dark pitch border, sky tint and automatic day/night (subtle night bloom). Effects need Kitserver; they work with Windows' d3d8 and with dgVoodoo.
 
-**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing, F5 back to defaults, F2 / Insert / Home effects, PgDn/PgUp turn, F1 guide; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.
+**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing, F5 back to defaults, F2 effects menu, PgDn/PgUp turn, F1 guide; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.

@@ -190,8 +190,8 @@ static struct {
     int t_activar, t_captura, t_guia, t_bruma, t_color, t_mascara, t_cancha;
     int aniso, cancha;                        /* cancha: bit 0 = franjas de cesped, bit 1 = sombra */
     float nitidez, vineta, sombra_linea, sombra_fuerza, sombra_penumbra, franjas_fuerza;
-    int franjas_n, luces, cielo;            /* luces: bloom + destellos de noche; cielo: tinte del cielo */
-    float bloom, destellos;
+    int franjas_n, luces, cielo;            /* luces: bloom de noche; cielo: tinte del cielo */
+    float bloom;
     float fuerza, bruma_fuerza;
     DWORD bruma_color;                        /* 0 = el color de niebla del juego */
     /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
@@ -273,7 +273,6 @@ static void leer_ajustes(void) {
     E.luces = GetPrivateProfileIntA("efectos", "luces_noche", 1, g_ini);
     E.cielo = GetPrivateProfileIntA("efectos", "cielo", 1, g_ini);
     GetPrivateProfileStringA("efectos", "bloom", "0.35", s, sizeof s, g_ini); E.bloom = (float)atof(s);
-    GetPrivateProfileStringA("efectos", "destellos", "0.6", s, sizeof s, g_ini); E.destellos = (float)atof(s);
     E.cancha = GetPrivateProfileIntA("efectos", "cancha", 7, g_ini) & 7;
     E.franjas_n = GetPrivateProfileIntA("efectos", "franjas", 18, g_ini);
     if (E.franjas_n < 2) E.franjas_n = 2;
@@ -352,6 +351,8 @@ static struct { void *tex; DWORD bloque, pintado_ms; DWORD px[GUIA_W * GUIA_H]; 
 
 /* Diagnostico */
 static struct { int capturando, cuadro, dibujos; FILE *f; } C;
+Jugadores g_jugadores;
+static Jugadores g_armando;   /* se junta durante el cuadro (ver anotar_jugador) */
 
 static void cap(const char *fmt, ...) {
     va_list ap;
@@ -687,13 +688,9 @@ static void camara_de_vista(const float *m, float *c) {
     for (j = 0; j < 3; j++) c[j] = -(m[12] * m[j * 4] + m[13] * m[j * 4 + 1] + m[14] * m[j * 4 + 2]);
 }
 
-/* Dia / noche y reflectores, a partir de la escena a 1/8 leida cada LEER_CADA cuadros. */
+/* Dia / noche a partir de la escena a 1/8, leida cada LEER_CADA cuadros (no frena la placa). */
 #define LEER_CADA 20
-#define MAX_LUCES 16
 static int g_noche, g_cuadro_lectura;
-static struct { float x, y, f; } g_luces[MAX_LUCES];
-static int g_n_luces;
-static void *g_destello;                       /* textura MANAGED de la estrella */
 
 static void leer_escena(void *dev, UINT w8, UINT h8) {
     RectBloqueado8 lr;
@@ -735,46 +732,7 @@ static void leer_escena(void *dev, UINT w8, UINT h8) {
         }
         (void)suma;
     }
-    /* reflectores: maximos locales muy brillantes */
-    g_n_luces = 0;
-    if (g_noche) {
-        for (y = 2; y + 2 < h8 * 2 / 3 && g_n_luces < MAX_LUCES; y++) {
-            for (x = 2; x + 2 < w8 && g_n_luces < MAX_LUCES; x++) {
-                const BYTE *p = (const BYTE *)lr.bits + y * lr.pitch + 4 * x;
-                int l = (p[0] > p[1] ? (p[0] > p[2] ? p[0] : p[2]) : (p[1] > p[2] ? p[1] : p[2])), dx, dy, maximo = 1;
-                if (l < 235) continue;
-                for (dy = -2; dy <= 2 && maximo; dy++) for (dx = -2; dx <= 2; dx++) {
-                    const BYTE *q = (const BYTE *)lr.bits + (y + dy) * lr.pitch + 4 * (x + dx);
-                    int lq = (q[0] > q[1] ? (q[0] > q[2] ? q[0] : q[2]) : (q[1] > q[2] ? q[1] : q[2]));
-                    if ((dx || dy) && (lq > l || (lq == l && (dy < 0 || (dy == 0 && dx < 0))))) { maximo = 0; break; }
-                }
-                if (maximo) {
-                    g_luces[g_n_luces].x = (x + 0.5f) * 8; g_luces[g_n_luces].y = (y + 0.5f) * 8;
-                    g_luces[g_n_luces].f = (l - 235) / 20.0f; g_n_luces++;
-                }
-            }
-        }
-    }
     ((SupUnlock_t)VT(R.lectura)[10])(R.lectura);
-}
-
-/* Estrella de los reflectores (estilo arcade): brillo central + 4 rayos largos y 4 cortos. */
-static void *textura_destello(void *dev) {
-    RectBloqueado8 lr; int x, y;
-    if (g_destello) return g_destello;
-    if (FAILED(g_crear_textura(dev, 128, 128, 1, 0, 21, POOL_MANAGED, &g_destello))) { g_destello = NULL; return NULL; }
-    if (FAILED(LLAMAR(LockRect_t, g_destello, TEX_LockRect)(g_destello, 0, &lr, NULL, 0))) return g_destello;
-    for (y = 0; y < 128; y++) for (x = 0; x < 128; x++) {
-        float dx = (x - 63.5f) / 64.0f, dy = (y - 63.5f) / 64.0f, r = sqrtf(dx * dx + dy * dy);
-        float g = expf(-r * 7.0f) * 1.2f;
-        float d1 = fabsf(dx) < fabsf(dy) ? fabsf(dx) : fabsf(dy);                    /* rayos en cruz */
-        float d2 = fabsf(dx - dy) < fabsf(dx + dy) ? fabsf(dx - dy) : fabsf(dx + dy);  /* rayos en diagonal */
-        float v = g + expf(-d1 * 60.0f) * (1 - r) * 0.9f + expf(-d2 * 70.0f) * (1 - r * 1.6f > 0 ? 1 - r * 1.6f : 0) * 0.4f;
-        BYTE b = (BYTE)((v > 1 ? 1 : v) * 255.0f);
-        ((DWORD *)((BYTE *)lr.bits + y * lr.pitch))[x] = 0xFF000000u | b * 0x010101u;
-    }
-    LLAMAR(UnlockRect_t, g_destello, TEX_UnlockRect)(g_destello, 0);
-    return g_destello;
 }
 
 typedef struct { float x, y, z, rhw; DWORD c; } VerticeColor;
@@ -956,8 +914,7 @@ static void aplicar_blur(void *dev) {
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
         RS(RS_STENCILENABLE, FALSE);
     }
-    /* Luces de noche: bloom sutil (lo que pasa del umbral en la escena a 1/8, sumado) y destellos
-     * sobre los reflectores detectados. */
+    /* Luces de noche: bloom sutil (lo que pasa del umbral en la escena a 1/8 del cuadro actual, sumado) */
     if (!E.ver_mascara && E.luces && g_noche) {
         RS(RS_STENCILENABLE, FALSE); RS(RS_ZENABLE, FALSE);
         RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_ONE);
@@ -968,21 +925,6 @@ static void aplicar_blur(void *dev) {
             TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
             RS(RS_TEXTUREFACTOR, (a << 24) | 0x00A0A0A0);      /* umbral ~63 % */
             quad(dev, ds.ancho, ds.alto, 0, 0);
-        }
-        if (E.destellos > 0 && g_n_luces && textura_destello(dev)) {
-            int k;
-            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, g_destello);
-            TSS(0, TSS_COLOROP, TOP_MODULATE); TSS(0, TSS_COLORARG1, TA_TEXTURE); TSS(0, TSS_COLORARG2, TA_TFACTOR);
-            TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
-            RS(RS_SRCBLEND, BLEND_ONE); RS(RS_DESTBLEND, BLEND_ONE);
-            for (k = 0; k < g_n_luces; k++) {
-                float f = g_luces[k].f > 1 ? 1 : g_luces[k].f, tam = ds.alto * (0.05f + 0.07f * f);
-                DWORD v = (DWORD)(E.destellos * (0.5f + 0.5f * f) * 255.0f);
-                if (v > 255) v = 255;
-                RS(RS_TEXTUREFACTOR, 0xFF000000u | (v << 16) | ((v * 240 / 255) << 8) | (v * 215 / 255));
-                quad_en(dev, g_luces[k].x * ds.ancho / (8.0f * (ds.ancho >> 3)) - tam * 0.5f,
-                        g_luces[k].y * ds.alto / (8.0f * (ds.alto >> 3)) - tam * 0.5f, tam, tam, 1.0f, 1.0f);
-            }
         }
         RS(RS_ALPHABLENDENABLE, FALSE);
     }
@@ -1142,6 +1084,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
     static int a_activar, a_captura, a_guia, a_bruma, a_color, a_mascara, a_cancha;
     if (!J.en_efecto) {
         J.mundo = 0; J.hecho = 0; J.vista_ok = J.proy_ok = 0; J.rt_mundo = NULL;
+        g_jugadores = g_armando; g_armando.n = 0;
         if (juego_en_foco() && flanco(E.t_guia, &a_guia)) {
             E.guia_fija = !E.guia_fija;
             WritePrivateProfileStringA("efectos", "guia_fija", E.guia_fija ? "1" : "0", g_ini);
@@ -1303,13 +1246,24 @@ static HRESULT WINAPI h_SetVertexShader(void *d, DWORD vs) {
     return ((SetVertexShader_t)g_orig[DEV_SetVertexShader])(d, vs);
 }
 
+/* Matriz de mundo de cada jugador (c64..c66, filas de una matriz 3x4): se juntan las del cuadro y
+ * se publican en BeginScene. El mundo se dibuja a 1/5 de las unidades de la pelota y con x espejado. */
+static void anotar_jugador(const float *f) {
+    Jugadores *j = &g_armando;
+    if (j->n >= MAX_JUGADORES || f[4] != 0.0f || f[5] != 1.0f || f[6] != 0.0f || f[7] != 0.0f) return;
+    if (fabsf(f[0] * f[0] + f[2] * f[2] - 1.0f) > 0.05f) return;   /* solo giro, sin escala */
+    j->x[j->n] = -5.0f * f[3]; j->z[j->n] = 5.0f * f[11];
+    j->fx[j->n] = -f[2]; j->fz[j->n] = f[10];                       /* eje z del modelo = frente */
+    j->n++;
+}
+
 static HRESULT WINAPI h_SetVertexShaderConstant(void *d, DWORD reg, const void *datos, DWORD n) {
-    if (C.capturando && !J.en_efecto && reg < 8) {
+    if (!J.en_efecto && reg == 64 && n == 3) anotar_jugador((const float *)datos);
+    if (C.capturando && !J.en_efecto) {
         const float *f = (const float *)datos;
-        if (n >= 4)
-            cap("  VSC c%lu x%lu [%g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g]", reg, n,
-                f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15]);
-        else cap("  VSC c%lu x%lu [%g %g %g %g]", reg, n, f[0], f[1], f[2], f[3]);
+        DWORD i;
+        cap("  VSC c%lu x%lu", reg, n);
+        for (i = 0; i < n; i++) cap("    c%lu [%g %g %g %g]", reg + i, f[4 * i], f[4 * i + 1], f[4 * i + 2], f[4 * i + 3]);
     }
     return ((SetVertexShaderConstant_t)g_orig[DEV_SetVertexShaderConstant])(d, reg, datos, n);
 }

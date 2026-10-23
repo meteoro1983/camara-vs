@@ -227,11 +227,26 @@ static struct {
     int iniciado, modo_ant, dueno_ant;
     float s_obj[3], s_ojo[3], v_obj[3], v_ojo[3], vel_f[3], pel_ant[3], giro, posesion, en_manos_t, lado, lado_t;
     float adel[3], v_adel[3], vel_r[3], tiro_t, zoom_k;
+    float frente[2], lanzador[2]; /* lateral: hacia donde mira el que saca y donde esta */
     int tiro;                    /* 1 = disparo, 2 = centro o pelotazo */
     LARGE_INTEGER antes;
 } S;
 
 static float clampf(float v, float a, float b) { return v < a ? a : v > b ? b : v; }
+
+/* El que saca el lateral: el jugador dibujado mas cerca de la pelota (a menos de 2,5 m). */
+static int buscar_lanzador(const float *pel, float *pos, float *frente) {
+    int i, mejor = -1;
+    float d, dmin = (2.5f * M) * (2.5f * M);
+    for (i = 0; i < g_jugadores.n && i < MAX_JUGADORES; i++) {
+        d = (g_jugadores.x[i] - pel[0]) * (g_jugadores.x[i] - pel[0]) + (g_jugadores.z[i] - pel[2]) * (g_jugadores.z[i] - pel[2]);
+        if (d < dmin) { dmin = d; mejor = i; }
+    }
+    if (mejor < 0) return 0;
+    pos[0] = g_jugadores.x[mejor]; pos[1] = g_jugadores.z[mejor];
+    frente[0] = g_jugadores.fx[mejor]; frente[1] = g_jugadores.fz[mejor];
+    return 1;
+}
 
 /* Resorte con amortiguacion critica (SmoothDamp): a diferencia del filtro exponencial, arranca
  * y frena con aceleracion, sin tirones; es lo que da el movimiento flotante tipo gimbal. */
@@ -316,7 +331,7 @@ static void teclas(void) {
 static int calcular(void) {
     float pel[3], ant[3], vel[3], q_obj[3], q_ojo[3], mira[3];
     float dt, rapidez, retraso, k, lado, lado_cancha, relajado, q_giro, riel, sep, dist, zoom;
-    int fase, dueno, modo, en_manos, i, va;
+    int fase, dueno, modo, en_manos, i, va, entra_lateral;
     LARGE_INTEGER ahora, frec;
     BYTE *b = (BYTE *)(UINT_PTR)*g_pelota;
 
@@ -382,6 +397,7 @@ static int calcular(void) {
      * a la altura de las manos. */
     en_manos = es_arquero(dueno) && fabsf(pel[0]) > (MEDIO_LARGO_M - 18) * M && rapidez < 0.6f && pel[1] < -0.6f * M;
     S.en_manos_t = en_manos ? S.en_manos_t + dt : 0.0f;
+    entra_lateral = modo == LATERAL && S.modo_ant != LATERAL;
     S.modo_ant = modo;
 
     /* Adelanto con su propio resorte y con tope: sin saltos cuando la pelota llega al pie. En
@@ -401,8 +417,21 @@ static int calcular(void) {
     q_obj[1] = 0.5f * pel[1] - 0.5f * M;
     q_obj[2] = pel[2] + S.adel[2];
     if (modo == LATERAL) {
-        float afuera = pel[2] > 0 ? 1.0f : -1.0f;
-        q_obj[0] = pel[0]; q_obj[1] = -1.2f * M; q_obj[2] = pel[2] - afuera * 15.0f * M;
+        /* Tercera persona: detras de la espalda del que saca, girando con el. Sin los datos de
+         * los jugadores (efectos apagados) queda mirando derecho hacia adentro de la cancha. */
+        float afuera = pel[2] > 0 ? 1.0f : -1.0f, pos[2], fr[2], largo;
+        if (entra_lateral || !S.iniciado) {
+            S.frente[0] = 0.0f; S.frente[1] = -afuera; S.lanzador[0] = pel[0]; S.lanzador[1] = pel[2];
+            if (buscar_lanzador(pel, pos, fr)) { memcpy(S.frente, fr, sizeof fr); memcpy(S.lanzador, pos, sizeof pos); }
+        } else if (buscar_lanzador(pel, pos, fr)) {
+            k = 1.0f - expf(-dt / 0.15f);
+            for (i = 0; i < 2; i++) { S.frente[i] += (fr[i] - S.frente[i]) * k; S.lanzador[i] += (pos[i] - S.lanzador[i]) * k; }
+        }
+        largo = sqrtf(S.frente[0] * S.frente[0] + S.frente[1] * S.frente[1]);
+        if (largo < 0.1f) { S.frente[0] = 0.0f; S.frente[1] = -afuera; largo = 1.0f; }
+        S.frente[0] /= largo; S.frente[1] /= largo;
+        q_obj[0] = S.lanzador[0] + S.frente[0] * 15.0f * M; q_obj[1] = -1.2f * M;
+        q_obj[2] = S.lanzador[1] + S.frente[1] * 15.0f * M;
     }
     if (!S.iniciado) { memcpy(S.s_obj, q_obj, sizeof q_obj); memset(S.v_obj, 0, sizeof S.v_obj); }
     retraso = modo == JUEGO ? A.retraso : 0.45f;
@@ -449,9 +478,9 @@ static int calcular(void) {
         if (mira[1] < techo) mira[1] = techo;
     }
     if (modo == LATERAL) {
-        /* A la altura del hombro del que saca, mirando hacia adentro de la cancha. */
-        float afuera = pel[2] > 0 ? 1.0f : -1.0f;
-        q_ojo[0] = pel[0]; q_ojo[1] = -2.5f * M; q_ojo[2] = pel[2] + afuera * 6.0f * M;
+        /* A la altura del hombro del que saca, detras de su espalda. */
+        q_ojo[0] = S.lanzador[0] - S.frente[0] * 6.0f * M; q_ojo[1] = -2.5f * M;
+        q_ojo[2] = S.lanzador[1] - S.frente[1] * 6.0f * M;
         memcpy(mira, S.s_obj, sizeof mira);
     }
     if (!S.iniciado) { memcpy(S.s_ojo, q_ojo, sizeof q_ojo); memset(S.v_ojo, 0, sizeof S.v_ojo); }

@@ -7,7 +7,7 @@
 
 #include <windows.h>
 
-#define CAMARA_VS_VERSION "1.3.0-dev"
+#define CAMARA_VS_VERSION "1.2.2"
 
 enum { GUIA_JUEGO, GUIA_LATERAL, GUIA_ARQUERO };
 
@@ -24,7 +24,7 @@ typedef struct {
     /* efectos */
     int blur_ok, blur_activo, bruma_activa, color_activo, t_blur, t_bruma, t_color, t_guia;
     int cancha, t_cancha;     /* bit 0 = franjas de cesped, bit 1 = sombra del estadio, bit 2 = perimetro */
-    int noche, luces;         /* deteccion automatica de noche; bloom + destellos de noche */
+    int noche, luces;         /* deteccion automatica de noche; bloom de noche */
     /* menu de efectos (F2): mientras esta abierto, F3/F4 eligen y F7/F8 cambian (no mueven la camara) */
     int menu_abierto, menu_item, aniso, mascara;
     /* GetTickCount de la ultima tecla: la guia se muestra unos segundos */
@@ -32,6 +32,13 @@ typedef struct {
 } EstadoGuia;
 
 extern EstadoGuia g_guia;
+
+/* Jugadores dibujados en el ultimo cuadro, tomados de su matriz de mundo (constantes c64..c66 del
+ * shader de los jugadores: giro sobre el eje vertical + posicion). En unidades de la pelota
+ * (256 por metro): posicion y frente (vector unitario hacia donde mira el cuerpo). */
+#define MAX_JUGADORES 48
+typedef struct { int n; float x[MAX_JUGADORES], z[MAX_JUGADORES], fx[MAX_JUGADORES], fz[MAX_JUGADORES]; } Jugadores;
+extern Jugadores g_jugadores;
 
 void anotar(const char *fmt, ...);
 int efectos_iniciar(const char *ini);
