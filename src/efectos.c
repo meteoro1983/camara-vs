@@ -50,7 +50,8 @@ enum {
     DEV_SetTexture = 61, DEV_SetTextureStageState = 63, DEV_DrawPrimitive = 70,
     DEV_DrawIndexedPrimitive = 71, DEV_DrawPrimitiveUP = 72, DEV_DrawIndexedPrimitiveUP = 73,
     DEV_SetVertexShader = 76, DEV_SetVertexShaderConstant = 79, DEV_SetStreamSource = 83,
-    DEV_SetPixelShader = 88,
+    DEV_CreatePixelShader = 87, DEV_SetPixelShader = 88, DEV_DeletePixelShader = 90,
+    DEV_SetPixelShaderConstant = 91,
     DEV_N = 97
 };
 /* IDirect3DSurface8 / IDirect3DTexture8 */
@@ -92,6 +93,9 @@ typedef HRESULT (WINAPI *SetVertexShader_t)(void *, DWORD);
 typedef HRESULT (WINAPI *SetVertexShaderConstant_t)(void *, DWORD, const void *, DWORD);
 typedef HRESULT (WINAPI *SetStreamSource_t)(void *, UINT, void *, UINT);
 typedef HRESULT (WINAPI *SetPixelShader_t)(void *, DWORD);
+typedef HRESULT (WINAPI *CreatePixelShader_t)(void *, const DWORD *, DWORD *);
+typedef HRESULT (WINAPI *DeletePixelShader_t)(void *, DWORD);
+typedef HRESULT (WINAPI *SetPixelShaderConstant_t)(void *, DWORD, const void *, DWORD);
 
 static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e, 0xec, 0xe1, 0xec, 0x93, 0x58}};
 
@@ -173,7 +177,8 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 
 #define N_CAJAS 6
 static struct {
-    int activo, bruma, ver_mascara, diagnostico, guia_fija;
+    int activo, bruma, color, ver_mascara, diagnostico, guia_fija;
+    float saturacion, contraste, rgb[3];      /* color grading */
     int t_activar, t_captura, t_guia;
     float fuerza, bruma_fuerza;
     DWORD bruma_color;                        /* 0 = el color de niebla del juego */
@@ -212,6 +217,13 @@ static void leer_ajustes(void) {
     char s[64];
     E.activo = GetPrivateProfileIntA("efectos", "blur", 1, g_ini);
     E.bruma = GetPrivateProfileIntA("efectos", "bruma", 1, g_ini);
+    E.color = GetPrivateProfileIntA("efectos", "color", 1, g_ini);
+    GetPrivateProfileStringA("efectos", "color_saturacion", "1.12", s, sizeof s, g_ini);
+    E.saturacion = (float)atof(s);
+    GetPrivateProfileStringA("efectos", "color_contraste", "1.08", s, sizeof s, g_ini);
+    E.contraste = (float)atof(s);
+    GetPrivateProfileStringA("efectos", "color_rgb", "1 1 1", s, sizeof s, g_ini);
+    if (sscanf(s, "%f %f %f", &E.rgb[0], &E.rgb[1], &E.rgb[2]) != 3) E.rgb[0] = E.rgb[1] = E.rgb[2] = 1.0f;
     E.ver_mascara = GetPrivateProfileIntA("efectos", "ver_mascara", 0, g_ini);
     E.diagnostico = GetPrivateProfileIntA("efectos", "diagnostico", 0, g_ini);
     GetPrivateProfileStringA("efectos", "fuerza", "1", s, sizeof s, g_ini);
@@ -304,8 +316,35 @@ static void soltar(void **p) {
     if (*p) { LLAMAR(Release_t, *p, OBJ_Release)(*p); *p = NULL; }
 }
 
+/* Color grading: pixel shader 1.4 armado a mano (no hay ensamblador de D3D8). Las constantes de
+ * ps 1.x se recortan a [-1,1]: los factores van a la mitad y se usa el modificador _x2.
+ *   texld r0, t0 ; dp3 r1.rgb, r0, c0 (luma) ; sub_x2 r2.rgb, r0, r1 ; mad r0.rgb, r2, c1, r1
+ *   sub r0.rgb, r0, c2 ; mad_x2 r0.rgb, r0, c3, c5 ; mul_x2 r0.rgb, r0, c4
+ *   c0 = luma, c1 = saturacion/2, c2 = 0.5, c3 = contraste/2, c4 = rgb/2, c5 = 0.25 */
+#define PS_REG(tipo, n) (0x80000000u | ((DWORD)(tipo) << 28) | (n))
+#define PS_DST(n, x2) (PS_REG(0, n) | 0x00070000u | ((x2) ? 0x01000000u : 0))   /* temporal .rgb */
+#define PS_DST_TODO(n) (PS_REG(0, n) | 0x000F0000u)
+#define PS_SRC(tipo, n) (PS_REG(tipo, n) | 0x00E40000u)
+#define R_ 0
+#define C_ 2
+#define T_ 3
+static const DWORD PS_COLOR[] = {
+    0xFFFF0104,
+    66, PS_DST_TODO(0), PS_SRC(T_, 0),
+    8, PS_DST(1, 0), PS_SRC(R_, 0), PS_SRC(C_, 0),
+    3, PS_DST(2, 1), PS_SRC(R_, 0), PS_SRC(R_, 1),
+    4, PS_DST(0, 0), PS_SRC(R_, 2), PS_SRC(C_, 1), PS_SRC(R_, 1),
+    3, PS_DST(0, 0), PS_SRC(R_, 0), PS_SRC(C_, 2),
+    4, PS_DST(0, 1), PS_SRC(R_, 0), PS_SRC(C_, 3), PS_SRC(C_, 5),
+    5, PS_DST(0, 1), PS_SRC(R_, 0), PS_SRC(C_, 4),
+    0x0000FFFF};
+static DWORD g_ps_color;
+static int g_ps_fallo;
+
 static void liberar_recursos(void *dev) {
     int i;
+    if (g_ps_color && dev) LLAMAR(DeletePixelShader_t, dev, DEV_DeletePixelShader)(dev, g_ps_color);
+    g_ps_color = 0;
     if (G.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, G.bloque);
     G.bloque = 0;
     for (i = 0; i < 3; i++) { soltar(&R.sup[i]); soltar(&R.tex[i]); }
@@ -448,6 +487,28 @@ static void aplicar_blur(void *dev) {
     estados_base(dev);
     LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
     RS(RS_ZENABLE, FALSE); RS(RS_STENCILENABLE, FALSE);
+
+    /* 0. Color grading sutil (saturacion, contraste, ganancia RGB) sobre el mundo, desde una copia */
+    if (E.color && !E.ver_mascara && !g_ps_fallo) {
+        if (!g_ps_color && FAILED(LLAMAR(CreatePixelShader_t, dev, DEV_CreatePixelShader)(dev, PS_COLOR, &g_ps_color))) {
+            g_ps_color = 0; g_ps_fallo = 1;
+            anotar("efectos: el device no acepto el pixel shader del color: color apagado");
+        }
+        if (g_ps_color && (R.copia || textura_rt(dev, ds.ancho, ds.alto, ds.formato, &R.copia, &R.copia_sup)) &&
+            SUCCEEDED(LLAMAR(CopyRects_t, dev, DEV_CopyRects)(dev, rt, NULL, 0, R.copia_sup, NULL))) {
+            float c[6][4] = {{0.299f, 0.587f, 0.114f, 0}, {0}, {0.5f, 0.5f, 0.5f, 0.5f}, {0},
+                             {E.rgb[0] * 0.5f, E.rgb[1] * 0.5f, E.rgb[2] * 0.5f, 0.5f}, {0.25f, 0.25f, 0.25f, 0.25f}};
+            for (i = 0; i < 4; i++) { c[1][i] = E.saturacion * 0.5f; c[3][i] = E.contraste * 0.5f; }
+            LLAMAR(SetPixelShaderConstant_t, dev, DEV_SetPixelShaderConstant)(dev, 0, c, 6);
+            LLAMAR(SetPixelShader_t, dev, DEV_SetPixelShader)(dev, g_ps_color);
+            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.copia);
+            RS(RS_ALPHABLENDENABLE, FALSE);
+            quad(dev, ds.ancho, ds.alto, 0, 0);
+            LLAMAR(SetPixelShader_t, dev, DEV_SetPixelShader)(dev, 0);
+            /* si el blur parte de la copia, que parta de la escena ya corregida */
+            if (!escena) LLAMAR(CopyRects_t, dev, DEV_CopyRects)(dev, rt, NULL, 0, R.copia_sup, NULL);
+        }
+    }
 
     /* 1. Escena a 1/2, 1/4 y 1/8 (solo si hay blur) */
     for (i = 0; i < 3 && E.activo; i++) {
@@ -601,7 +662,7 @@ static void antes_de_dibujar(void *dev) {
         J.rt_mundo = J.rt;
         return;
     }
-    if (J.hecho || !(E.activo || E.bruma || E.ver_mascara) || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
+    if (J.hecho || !(E.activo || E.bruma || E.color || E.ver_mascara) || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
     J.hecho = 1;
     J.en_efecto = 1;
     __try { aplicar_blur(dev); }
@@ -628,10 +689,14 @@ static HRESULT WINAPI h_BeginScene(void *d) {
         }
         if (juego_en_foco() && flanco(E.t_activar, &a_activar)) {
             g_guia.tecla_ms = GetTickCount();
-            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+            int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            if (ctrl && !shift) {
                 E.bruma = !E.bruma;
                 WritePrivateProfileStringA("efectos", "bruma", E.bruma ? "1" : "0", g_ini);
-            } else if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+            } else if (shift && !ctrl) {
+                E.color = !E.color;
+                WritePrivateProfileStringA("efectos", "color", E.color ? "1" : "0", g_ini);
+            } else if (shift && ctrl) {
                 E.ver_mascara = !E.ver_mascara;
                 WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
             } else {
@@ -639,7 +704,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
                 WritePrivateProfileStringA("efectos", "blur", E.activo ? "1" : "0", g_ini);
             }
         }
-        g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
+        g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.color_activo = E.color && !g_ps_fallo; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
         C.cuadro++;
         if (E.diagnostico && !C.capturando && flanco(E.t_captura, &a_captura)) {
             char ruta[MAX_PATH];
@@ -918,7 +983,7 @@ int efectos_iniciar(const char *ini) {
     g_guia.blur_ok = 1;
     anotar("efectos: %d funciones con hotpatch, %d por puntero; ganchos sin poner:%s", n_hot, n_vt,
            lista[0] ? lista : " ninguno");
-    anotar("efectos: blur %s (tecla 0x%02X; con Shift = ver la mascara); guia en pantalla: tecla 0x%02X",
+    anotar("efectos: blur %s (tecla 0x%02X; Ctrl = bruma, Shift = color, Ctrl+Shift = mascara); guia en pantalla: tecla 0x%02X",
            E.activo ? "activo" : "apagado", E.t_activar, E.t_guia);
     return 1;
 }
