@@ -7,7 +7,7 @@
 
 #include <windows.h>
 
-#define CAMARA_VS_VERSION "1.2.1"
+#define CAMARA_VS_VERSION "1.3.0-dev"
 
 enum { GUIA_JUEGO, GUIA_LATERAL, GUIA_ARQUERO };
 
@@ -23,6 +23,7 @@ typedef struct {
         t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar, t_giro_menos, t_giro_mas;
     /* efectos */
     int blur_ok, blur_activo, bruma_activa, color_activo, t_blur, t_bruma, t_color, t_guia;
+    int cancha, t_cancha;     /* bit 0 = franjas de cesped, bit 1 = sombra del estadio */
     /* GetTickCount de la ultima tecla: la guia se muestra unos segundos */
     DWORD tecla_ms;
 } EstadoGuia;

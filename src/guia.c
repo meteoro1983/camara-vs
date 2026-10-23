@@ -164,8 +164,15 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
          e->blur_ok && e->bruma_activa ? ENCENDIDO : APAGADO);
     y += paso;
     nombre_tecla(e->t_color, s);
-    fila(dc, x, y, s, "Color", !e->blur_ok ? "NO DISPONIBLE" : e->color_activo ? "SI" : "NO",
+    fila(dc, x, y, s, "Color/nitidez", !e->blur_ok ? "NO DISPONIBLE" : e->color_activo ? "SI" : "NO",
          e->blur_ok && e->color_activo ? ENCENDIDO : APAGADO);
+    y += paso;
+    {
+        static const char *nom[4] = {"NO", "FRANJAS", "SOMBRA", "FRANJAS+SOMBRA"};
+        nombre_tecla(e->t_cancha, s);
+        fila(dc, x, y, s, "Cancha", !e->blur_ok ? "NO DISPONIBLE" : nom[e->cancha & 3],
+             e->blur_ok && e->cancha ? ENCENDIDO : APAGADO);
+    }
     y += paso + 4;
     par_teclas(e->t_altura_menos, e->t_altura_mas, k); sprintf(s, "%.0f m", e->altura);
     fila(dc, x, y, k, "Altura", s, LINEA); y += paso;
