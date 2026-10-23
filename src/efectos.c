@@ -182,7 +182,7 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 static struct {
     int activo, bruma, color, ver_mascara, diagnostico, guia_fija, publico;
     float saturacion, contraste, rgb[3];      /* color grading */
-    int t_activar, t_captura, t_guia;
+    int t_activar, t_captura, t_guia, t_bruma, t_color, t_mascara;
     float fuerza, bruma_fuerza;
     DWORD bruma_color;                        /* 0 = el color de niebla del juego */
     /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
@@ -213,8 +213,9 @@ static const float BRUMA[N_CAJAS]  = {0.0f, 0.0f, 0.05f, 0.10f, 0.16f, 0.24f};
 static const float LEJOS2[N_CAJAS] = {20.0f, 25.0f, 31.0f, 37.0f, 44.0f, 52.0f};
 static const float CERCA2[N_CAJAS] = {30.25f, 34.0f, 39.0f, 45.0f, 52.0f, 60.0f};
 static const float FONDO2[N_CAJAS] = {50.5f, 56.0f, 63.0f, 75.0f, 91.0f, 114.0f};
-static const float ALFA2[N_CAJAS]  = {0.20f, 0.45f, 0.55f, 0.70f, 0.90f, 1.00f};
-static const float BRUMA2[N_CAJAS] = {0.0f, 0.06f, 0.12f, 0.20f, 0.28f, 0.36f};
+static const float ALFA2[N_CAJAS]  = {0.35f, 0.60f, 0.75f, 0.90f, 1.00f, 1.00f};
+static const float NIVEL2[N_CAJAS] = {2.0f, 2.0f, 3.0f, 3.0f, 3.0f, 3.0f};
+static const float BRUMA2[N_CAJAS] = {0.04f, 0.12f, 0.22f, 0.32f, 0.42f, 0.52f};
 #define ALTO_CAJA_M 80.0f
 
 static void leer_lista(const char *clave, float *v, const float *def) {
@@ -253,6 +254,12 @@ static void leer_ajustes(void) {
     E.bruma_color = strncmp(s, "auto", 4) == 0 ? 0 : (DWORD)strtoul(s, NULL, 16) & 0x00FFFFFF;
     GetPrivateProfileStringA("efectos", "activar", "0x71", s, sizeof s, g_ini);
     E.t_activar = (int)strtol(s, NULL, 0);
+    GetPrivateProfileStringA("efectos", "tecla_bruma", "0x2D", s, sizeof s, g_ini);   /* Insert */
+    E.t_bruma = (int)strtol(s, NULL, 0);
+    GetPrivateProfileStringA("efectos", "tecla_color", "0x24", s, sizeof s, g_ini);   /* Inicio */
+    E.t_color = (int)strtol(s, NULL, 0);
+    GetPrivateProfileStringA("efectos", "tecla_mascara", "0x2E", s, sizeof s, g_ini); /* Supr */
+    E.t_mascara = (int)strtol(s, NULL, 0);
     GetPrivateProfileStringA("efectos", "captura", "0x7B", s, sizeof s, g_ini);
     E.t_captura = (int)strtol(s, NULL, 0);
     GetPrivateProfileStringA("efectos", "guia", "0x70", s, sizeof s, g_ini);
@@ -268,7 +275,7 @@ static void leer_ajustes(void) {
     leer_lista("lado_camara_2", E.cerca[1], CERCA2);
     leer_lista("fondos_2", E.fondo[1], FONDO2);
     leer_lista("mezcla_2", E.alfa[1], ALFA2);
-    leer_lista("nivel_2", E.nivel[1], NIVEL);
+    leer_lista("nivel_2", E.nivel[1], NIVEL2);
     leer_lista("bruma_mezcla_2", E.bruma_alfa[1], BRUMA2);
 }
 
@@ -809,7 +816,7 @@ static void dibujo_diag(const char *que, DWORD prim, UINT a, UINT b, UINT c) {
 }
 
 static HRESULT WINAPI h_BeginScene(void *d) {
-    static int a_activar, a_captura, a_guia;
+    static int a_activar, a_captura, a_guia, a_bruma, a_color, a_mascara;
     if (!J.en_efecto) {
         J.mundo = 0; J.hecho = 0; J.vista_ok = J.proy_ok = 0; J.rt_mundo = NULL;
         if (juego_en_foco() && flanco(E.t_guia, &a_guia)) {
@@ -817,26 +824,27 @@ static HRESULT WINAPI h_BeginScene(void *d) {
             WritePrivateProfileStringA("efectos", "guia_fija", E.guia_fija ? "1" : "0", g_ini);
             g_guia.tecla_ms = 0;   /* al soltarla se oculta en el acto */
         }
-        if (juego_en_foco() && flanco(E.t_activar, &a_activar)) {
-            g_guia.tecla_ms = GetTickCount();
-            int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-            if (ctrl && !shift) {
-                char v[4];
-                E.bruma = (E.bruma + 1) % 3;              /* apagada -> preset 1 -> preset 2 */
-                WritePrivateProfileStringA("efectos", "bruma", (sprintf(v, "%d", E.bruma), v), g_ini);
-            } else if (shift && !ctrl) {
-                E.color = !E.color;
-                WritePrivateProfileStringA("efectos", "color", E.color ? "1" : "0", g_ini);
-            } else if (shift && ctrl) {
-                E.ver_mascara = !E.ver_mascara;
-                WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
-            } else {
-                char v[4];
-                E.activo = (E.activo + 1) % 3;            /* apagado -> preset 1 -> preset 2 */
+        /* una tecla por ajuste (sin combinaciones): blur y bruma recorren apagado -> preset 1 -> preset 2 */
+        if (juego_en_foco()) {
+            char v[4];
+            if (flanco(E.t_activar, &a_activar)) {
+                E.activo = (E.activo + 1) % 3; g_guia.tecla_ms = GetTickCount();
                 WritePrivateProfileStringA("efectos", "blur", (sprintf(v, "%d", E.activo), v), g_ini);
             }
+            if (flanco(E.t_bruma, &a_bruma)) {
+                E.bruma = (E.bruma + 1) % 3; g_guia.tecla_ms = GetTickCount();
+                WritePrivateProfileStringA("efectos", "bruma", (sprintf(v, "%d", E.bruma), v), g_ini);
+            }
+            if (flanco(E.t_color, &a_color)) {
+                E.color = !E.color; g_guia.tecla_ms = GetTickCount();
+                WritePrivateProfileStringA("efectos", "color", E.color ? "1" : "0", g_ini);
+            }
+            if (flanco(E.t_mascara, &a_mascara)) {
+                E.ver_mascara = !E.ver_mascara;
+                WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
+            }
         }
-        g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.color_activo = E.color && !g_ps_fallo; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
+        g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.color_activo = E.color && !g_ps_fallo; g_guia.t_blur = E.t_activar; g_guia.t_bruma = E.t_bruma; g_guia.t_color = E.t_color; g_guia.t_guia = E.t_guia;
         C.cuadro++;
         if (E.diagnostico && !C.capturando && flanco(E.t_captura, &a_captura)) {
             char ruta[MAX_PATH];
@@ -1321,7 +1329,7 @@ int efectos_iniciar(const char *ini) {
     g_guia.blur_ok = 1;
     anotar("efectos: %d funciones con hotpatch, %d por puntero; ganchos sin poner:%s", n_hot, n_vt,
            lista[0] ? lista : " ninguno");
-    anotar("efectos: blur %s (tecla 0x%02X; Ctrl = bruma, Shift = color, Ctrl+Shift = mascara); guia en pantalla: tecla 0x%02X",
+    anotar("efectos: blur %s (tecla 0x%02X; bruma, color y mascara con sus teclas); guia en pantalla: tecla 0x%02X",
            E.activo ? "activo" : "apagado", E.t_activar, E.t_guia);
     return 1;
 }

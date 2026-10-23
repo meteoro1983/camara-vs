@@ -72,13 +72,13 @@ Con el juego abierto, ejecutá `inyectar.exe` (en la misma carpeta que `camara_v
 | F7 / F8 | Altura − / + 1 m |
 | F10 / F11 | Distancia del riel − / + 2 m |
 | F3 / F4 | Zoom más abierto / más cerrado |
-| Shift+F3 / Shift+F4 | Giro steadycam hacia los arcos − / + (cerca: tercera persona; lejos: transmisión) |
+| Av Pág / Re Pág | Giro steadycam hacia los arcos − / + (cerca: tercera persona; lejos: transmisión) |
 | F6 | Suavidad del travelling (0,2 · 0,35 · 0,6 · 1 s) |
 | F5 | Volver a la configuración estándar de Cámara VS |
 | **F2** | Blur de tribunas: apagado → preset 1 → preset 2 |
-| Ctrl+F2 | Bruma: apagada → preset 1 → preset 2 |
-| Shift+F2 | Color sí / no |
-| Ctrl+Shift+F2 | Ver los anillos del blur en colores (para ajustar medidas) |
+| Insert | Bruma: apagada → preset 1 → preset 2 |
+| Inicio | Color sí / no |
+| Supr | Ver los anillos del blur en colores (para ajustar medidas) |
 | **F1** | Fijar / ocultar la guía en pantalla (sola, aparece unos segundos al tocar cualquier tecla) |
 
 Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar las teclas y otros valores: giro, anticipación y tiempo de acomodo de la cámara; en `[efectos]`, dónde empieza el blur de cada lado (en metros), cuánto se mezcla y qué tan ancho es en cada anillo, la bruma y el color.
@@ -98,8 +98,9 @@ Los efectos (blur, bruma, color y guía) necesitan **Kitserver** y andan tanto c
 
 ## Novedades 1.2.1
 
-- **Segundo preset** de blur (entra más en la cancha) y de bruma (más baja y marcada): F2 / Ctrl+F2 una segunda vez.
-- **Shift+F3 / Shift+F4**: giro steadycam hacia los arcos; con la cámara cerca la lleva a espaldas de los jugadores, estilo tercera persona.
+- **Segundo preset** de blur (entra más en la cancha y es más marcado) y de bruma (más baja y marcada): F2 / Insert una segunda vez.
+- **Av Pág / Re Pág**: giro steadycam hacia los arcos; con la cámara cerca la lleva a espaldas de los jugadores, bien adentro de la cancha (tercera persona).
+- **Teclas sin combinaciones**: bruma = Insert, color = Inicio, máscara = Supr (todas configurables).
 - Soporte para **add-ons de público**: si hay un `publico_vs.dat` en la carpeta kitserver, el módulo recolorea el público con sus colores verdaderos (el juego lo tiñe de gris/azul en algunas tribunas). El add-on con gráficos no se distribuye acá.
 - Arreglos: enganches que Kitserver toma antes (SetRenderState, SetTexture, texturas) y reutilización de direcciones de texturas.
 
@@ -150,6 +151,6 @@ Licencia **MIT**: usalo, modificalo y compartilo libremente.
 
 **Virtua Striker–style match camera for Winning Eleven 9 and WE9 Liveware Evolution (PC), as a free Kitserver 5 module.**
 It follows the ball from a rail behind the touchline (like VS4), adds a gentle steadycam turn near the goals that recentres while a player keeps the ball, frames near-side throw-ins over the taker's shoulder, follows shots and crosses with a wider zoom, and keeps the game's own camera for goalkeeper restarts, replays and cut-scenes. It also stops the game from hiding the sky and stands, which it decides from its own camera.
-**New in 1.2:** Sega-arcade style **stand blur** anchored to the real pitch size (105 × 68 m, works with stock and Kitserver stadiums), subtle **haze** and **colour grading** (3D world only, the HUD stays sharp), and an **on-screen guide**. F2 blur, Ctrl+F2 haze, Shift+F2 colour, F1 guide. Effects need Kitserver; they work with Windows' d3d8 and with dgVoodoo.
+**New in 1.2:** Sega-arcade style **stand blur** anchored to the real pitch size (105 × 68 m, works with stock and Kitserver stadiums), subtle **haze** and **colour grading** (3D world only, the HUD stays sharp), and an **on-screen guide**. F2 blur, Insert haze, Home colour, F1 guide, PgUp/PgDn goal-facing steadycam turn. Effects need Kitserver; they work with Windows' d3d8 and with dgVoodoo.
 
-**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing, F5 back to defaults, F2 / Ctrl+F2 / Shift+F2 effects, F1 guide; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.
+**Install:** copy the zip contents into the game's `kitserver` folder and run `instalar.bat` (it adds the module to `kload.cfg` and keeps a backup). **Keys:** F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom, F6 smoothing, F5 back to defaults, F2 / Insert / Home effects, PgDn/PgUp turn, F1 guide; settings are saved to `camara_vs.ini`. Everything is found by byte signatures, and problems are reported in `camara_vs.log`. MIT licensed.

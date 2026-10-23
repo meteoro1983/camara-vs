@@ -20,6 +20,12 @@
 
 static void nombre_tecla(int vk, char *s) {
     if (vk >= VK_F1 && vk <= VK_F24) sprintf(s, "F%d", vk - VK_F1 + 1);
+    else if (vk == VK_INSERT) strcpy(s, "Insert");
+    else if (vk == VK_HOME) strcpy(s, "Inicio");
+    else if (vk == VK_END) strcpy(s, "Fin");
+    else if (vk == VK_DELETE) strcpy(s, "Supr");
+    else if (vk == VK_PRIOR) strcpy(s, "ReP");
+    else if (vk == VK_NEXT) strcpy(s, "AvP");
     else if (vk > 0) sprintf(s, "0x%02X", vk);
     else strcpy(s, "-");
 }
@@ -153,12 +159,11 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     fila(dc, x, y, k, "Blur tribunas", !e->blur_ok ? "NO DISPONIBLE" : e->blur_activo == 2 ? "PRESET 2" : e->blur_activo ? "PRESET 1" : "NO",
          e->blur_ok && e->blur_activo ? ENCENDIDO : APAGADO);
     y += paso;
-    sprintf(s, "Ctrl+%s", k);
+    nombre_tecla(e->t_bruma, s);
     fila(dc, x, y, s, "Bruma", !e->blur_ok ? "NO DISPONIBLE" : e->bruma_activa == 2 ? "PRESET 2" : e->bruma_activa ? "PRESET 1" : "NO",
          e->blur_ok && e->bruma_activa ? ENCENDIDO : APAGADO);
     y += paso;
-    nombre_tecla(e->t_blur, k);
-    sprintf(s, "Shift+%s", k);
+    nombre_tecla(e->t_color, s);
     fila(dc, x, y, s, "Color", !e->blur_ok ? "NO DISPONIBLE" : e->color_activo ? "SI" : "NO",
          e->blur_ok && e->color_activo ? ENCENDIDO : APAGADO);
     y += paso + 4;
@@ -168,7 +173,7 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     fila(dc, x, y, k, "Distancia", s, LINEA); y += paso;
     par_teclas(e->t_zoom_abrir, e->t_zoom_cerrar, k); sprintf(s, "%.0f", e->zoom);
     fila(dc, x, y, k, "Zoom", s, LINEA); y += paso;
-    par_teclas(e->t_zoom_abrir, e->t_zoom_cerrar, k); sprintf(s, "Sh+%s", k); strcpy(k, s); sprintf(s, "%.2f", e->giro);
+    par_teclas(e->t_giro_menos, e->t_giro_mas, k); sprintf(s, "%.2f", e->giro);
     fila(dc, x, y, k, "Giro arco", s, LINEA); y += paso;
     nombre_tecla(e->t_retraso, k); sprintf(s, "%.2f s", e->retraso);
     fila(dc, x, y, k, "Retraso", s, LINEA); y += paso;

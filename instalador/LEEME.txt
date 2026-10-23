@@ -14,12 +14,12 @@ TECLAS (con el juego en foco)
   F7 / F8    altura - / +
   F10 / F11  distancia - / +
   F3 / F4    zoom mas abierto / mas cerrado
-  Shift+F3/F4  giro hacia los arcos - / +
+  AvPag/RePag  giro hacia los arcos - / +
   F6         suavidad del travelling
   F5         configuracion estandar
   F2         blur de tribunas: apagado / preset 1 / preset 2
-  Ctrl+F2    bruma: apagada / preset 1 / preset 2
-  Shift+F2   color si / no
+  Insert     bruma: apagada / preset 1 / preset 2
+  Inicio     color si / no
   F1         fijar / ocultar la guia en pantalla
   Los ajustes se guardan solos en camara_vs.ini (efectos en [efectos]).
 
@@ -33,5 +33,5 @@ PROBLEMAS
 ---------------------------------------------------------------------------
 INSTALL: copy all these files into the game's "kitserver" folder and run
 instalar.bat. Keys: F9 on/off, F7/F8 height, F10/F11 distance, F3/F4 zoom,
-F6 smoothing, F2/Ctrl+F2/Shift+F2 blur/haze/colour, F1 on-screen guide.
+F6 smoothing, F2/Insert/Home blur/haze/colour, PgUp/PgDn turn, F1 guide.
 Without Kitserver: run inyectar.exe with the game open (camera only).

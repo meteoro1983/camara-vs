@@ -128,7 +128,7 @@ typedef struct {
     float altura, distancia, mira, retraso, adelanto, giro, centrado, zoom;
     int activa;
     int t_activar, t_altura_menos, t_altura_mas, t_dist_menos, t_dist_mas,
-        t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar;
+        t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar, t_giro_menos, t_giro_mas;
 } Ajustes;
 static Ajustes A;
 
@@ -177,6 +177,8 @@ static void leer_ajustes(void) {
     A.t_zoom_cerrar  = ini_tecla("zoom_cerrar", VK_F4);
     A.t_retraso      = ini_tecla("retraso", VK_F6);
     A.t_estandar     = ini_tecla("estandar", VK_F5);
+    A.t_giro_menos   = ini_tecla("giro_menos", VK_NEXT);    /* Av Pag */
+    A.t_giro_mas     = ini_tecla("giro_mas", VK_PRIOR);     /* Re Pag */
 }
 
 /* ---------------------------------------------------------------- estado del juego */
@@ -275,13 +277,13 @@ static void poner_estadio(int completo) {
 }
 
 static void teclas(void) {
-    int t[9], i;
+    int t[11], i;
     if (!juego_en_foco()) return;
     /* se leen todas antes (flancos) para saber si se toco alguna: la guia se muestra unos segundos */
     {
-        const int vk[9] = {A.t_activar, A.t_altura_menos, A.t_altura_mas, A.t_dist_menos, A.t_dist_mas,
-                           A.t_zoom_abrir, A.t_zoom_cerrar, A.t_retraso, A.t_estandar};
-        for (i = 0; i < 9; i++) if ((t[i] = tecla(vk[i])) != 0) g_guia.tecla_ms = GetTickCount();
+        const int vk[11] = {A.t_activar, A.t_altura_menos, A.t_altura_mas, A.t_dist_menos, A.t_dist_mas,
+                            A.t_zoom_abrir, A.t_zoom_cerrar, A.t_retraso, A.t_estandar, A.t_giro_menos, A.t_giro_mas};
+        for (i = 0; i < 11; i++) if ((t[i] = tecla(vk[i])) != 0) g_guia.tecla_ms = GetTickCount();
     }
     if (t[0]) {
         A.activa = !A.activa; S.iniciado = 0;
@@ -291,14 +293,11 @@ static void teclas(void) {
     if (t[2]) { A.altura += 1.0f; ini_guardar("altura", A.altura); }
     if (t[3]) { A.distancia = A.distancia > 6.0f ? A.distancia - 2.0f : 4.0f; ini_guardar("distancia", A.distancia); }
     if (t[4]) { A.distancia += 2.0f; ini_guardar("distancia", A.distancia); }
-    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
-        /* Shift + zoom = giro steadycam (cuanto mira hacia el arco, a las espaldas de los jugadores) */
-        if (t[5]) { A.giro = A.giro > 0.05f ? A.giro - 0.05f : 0.0f; ini_guardar("giro", A.giro); }
-        if (t[6]) { A.giro = A.giro < 0.95f ? A.giro + 0.05f : 1.0f; ini_guardar("giro", A.giro); }
-    } else {
-        if (t[5]) { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
-        if (t[6]) { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
-    }
+    if (t[5]) { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
+    if (t[6]) { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
+    /* giro steadycam: cuanto mira hacia el arco, a las espaldas de los jugadores */
+    if (t[9])  { A.giro = A.giro > 0.05f ? A.giro - 0.05f : 0.0f; ini_guardar("giro", A.giro); }
+    if (t[10]) { A.giro = A.giro < 0.95f ? A.giro + 0.05f : 1.0f; ini_guardar("giro", A.giro); }
     if (t[7]) {
         static const float r[] = {0.2f, 0.35f, 0.6f, 1.0f};
         int i, sig = 1;
@@ -441,7 +440,7 @@ static int calcular(void) {
         /* Con la camara cerca (poca distancia o zoom cerrado) el giro tambien la mete en la cancha,
          * detras de los jugadores, estilo tercera persona; lejos queda el giro de transmision. */
         float cerca = clampf((1.0f - A.distancia / 30.0f) * clampf(A.zoom / 470.0f, 0.5f, 1.5f), 0.0f, 1.0f);
-        q_ojo[2] = riel + (S.s_obj[2] - riel) * clampf(fabsf(S.giro) * cerca * 0.8f, 0.0f, 0.6f);
+        q_ojo[2] = riel + (S.s_obj[2] - riel) * clampf(fabsf(S.giro) * (0.3f + cerca) * 1.6f, 0.0f, 0.9f);
     }
     mira[0] = S.s_obj[0]; mira[1] = S.s_obj[1]; mira[2] = S.s_obj[2] - lado * A.mira * M;
     {
@@ -477,6 +476,7 @@ static int calcular(void) {
         e->t_activar = A.t_activar; e->t_altura_menos = A.t_altura_menos; e->t_altura_mas = A.t_altura_mas;
         e->t_dist_menos = A.t_dist_menos; e->t_dist_mas = A.t_dist_mas; e->t_zoom_abrir = A.t_zoom_abrir;
         e->t_zoom_cerrar = A.t_zoom_cerrar; e->t_retraso = A.t_retraso; e->t_estandar = A.t_estandar;
+        e->t_giro_menos = A.t_giro_menos; e->t_giro_mas = A.t_giro_mas;
     }
     return va;
 }
