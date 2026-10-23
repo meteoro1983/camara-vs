@@ -144,6 +144,7 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 #define TOP_SELECTARG1 2
 #define TOP_MODULATE 4
 #define TA_DIFFUSE 0
+#define TA_CURRENT 1
 #define TA_TEXTURE 2
 #define TA_TFACTOR 3
 #define BLEND_ZERO 1
@@ -280,6 +281,9 @@ static struct {
 /* Recursos propios (pool DEFAULT: se sueltan antes de cada Reset) */
 static struct {
     void *tex[3], *sup[3];    /* escena a 1/2, 1/4 y 1/8 */
+    void *masc, *masc_sup;    /* mascara de pesos a resolucion completa (se pinta con el stencil) */
+    void *mtex[8], *msup[8];  /* la mascara achicada a la mitad hasta ~150 lineas: queda suave */
+    int n_masc;
     void *copia, *copia_sup;  /* copia de la escena si el render target no es textura */
     UINT ancho, alto;
     DWORD bloque;             /* state block para dejar todo como estaba */
@@ -355,6 +359,8 @@ static void liberar_recursos(void *dev) {
     if (G.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, G.bloque);
     G.bloque = 0;
     for (i = 0; i < 3; i++) { soltar(&R.sup[i]); soltar(&R.tex[i]); }
+    for (i = 0; i < R.n_masc; i++) { soltar(&R.msup[i]); soltar(&R.mtex[i]); }
+    soltar(&R.masc_sup); soltar(&R.masc); R.n_masc = 0;
     soltar(&R.copia_sup); soltar(&R.copia);
     if (R.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, R.bloque);
     R.bloque = 0; R.ancho = R.alto = 0;
@@ -375,6 +381,21 @@ static int preparar_recursos(void *dev, UINT w, UINT h, UINT formato) {
             anotar("efectos: no pude crear las texturas del blur (%ux%u formato %u)", w, h, formato);
             liberar_recursos(dev); return 0;
         }
+    if (!textura_rt(dev, w, h, 21 /* A8R8G8B8 */, &R.masc, &R.masc_sup)) {
+        anotar("efectos: no pude crear la mascara del blur");
+        liberar_recursos(dev); return 0;
+    }
+    {
+        UINT mw = w, mh = h;
+        while (mh > 160 && R.n_masc < 8) {
+            mw >>= 1; mh >>= 1;
+            if (!textura_rt(dev, mw, mh, 21, &R.mtex[R.n_masc], &R.msup[R.n_masc])) {
+                anotar("efectos: no pude crear la mascara achicada");
+                liberar_recursos(dev); return 0;
+            }
+            R.n_masc++;
+        }
+    }
     if (FAILED(LLAMAR(CreateStateBlock_t, dev, DEV_CreateStateBlock)(dev, SBT_ALL, &R.bloque))) {
         anotar("efectos: no pude crear el state block");
         liberar_recursos(dev); return 0;
@@ -431,17 +452,76 @@ static void estados_base(void *dev) {
 }
 
 /* Achica src (sw x sh) sobre el render target actual (w x h): 4 muestras bilineales en las
- * esquinas de cada texel destino, sumadas a 1/4 cada una (blur de caja de 4x4 texels fuente). */
+ * esquinas de cada texel destino, sumadas a 1/4 cada una (blur de caja de 4x4 texels fuente).
+ * Promedia tambien el alfa (la mascara de pesos va en el alfa). */
 static void achicar(void *dev, void *src, UINT sw, UINT sh, UINT w, UINT h) {
     float du = 1.0f / sw, dv = 1.0f / sh;
     LLAMAR(Clear_t, dev, DEV_Clear)(dev, 0, NULL, CLEAR_TARGET, 0, 1.0f, 0);
     LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, src);
     TSS(0, TSS_COLOROP, TOP_MODULATE); TSS(0, TSS_COLORARG1, TA_TEXTURE); TSS(0, TSS_COLORARG2, TA_TFACTOR);
-    TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
+    TSS(0, TSS_ALPHAOP, TOP_MODULATE); TSS(0, TSS_ALPHAARG1, TA_TEXTURE); TSS(0, TSS_ALPHAARG2, TA_TFACTOR);
     RS(RS_TEXTUREFACTOR, 0x40404040);
     RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_ONE); RS(RS_DESTBLEND, BLEND_ONE);
     quad(dev, w, h, -du, -dv); quad(dev, w, h, du, -dv);
     quad(dev, w, h, -du, dv);  quad(dev, w, h, du, dv);
+}
+
+/* Pesos por anillo (0 = nitido .. 1) -> mascara suave. Se pintan con el stencil (contador de
+ * cajas) en el alfa de la mascara a resolucion completa y se achica hasta ~150 lineas: asi los
+ * anillos se funden sin escalones donde su borde corta los sprites del publico. Deja puesto el
+ * render target de la mascara; devuelve la textura final. */
+static void *mascara_suave(void *dev, void *z, UINT w, UINT h, const float *peso) {
+    void *src = R.masc;
+    int n, i;
+    LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, R.masc_sup, z);
+    LLAMAR(Clear_t, dev, DEV_Clear)(dev, 0, NULL, CLEAR_TARGET, 0, 1.0f, 0);
+    LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
+    TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TFACTOR);
+    TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
+    RS(RS_ZENABLE, FALSE); RS(RS_ALPHABLENDENABLE, FALSE);
+    RS(RS_STENCILENABLE, TRUE); RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILMASK, 0x7F);
+    RS(RS_STENCILPASS, SOP_KEEP); RS(RS_STENCILFAIL, SOP_KEEP); RS(RS_STENCILZFAIL, SOP_KEEP); RS(RS_STENCILWRITEMASK, 0);
+    for (n = 0; n < N_CAJAS; n++) {
+        float a = peso[N_CAJAS - 1 - n];           /* contador n -> anillo N-1-n */
+        DWORD fa = (DWORD)((a < 0 ? 0 : a > 1 ? 1 : a) * 255.0f + 0.5f);
+        if (!fa) continue;
+        RS(RS_STENCILREF, n);
+        RS(RS_TEXTUREFACTOR, fa * 0x01010101u);
+        quad(dev, w, h, 0, 0);
+    }
+    RS(RS_STENCILENABLE, FALSE);
+    for (i = 0; i < R.n_masc; i++) {
+        LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, R.msup[i], NULL);
+        achicar(dev, src, w, h, w >> 1, h >> 1);
+        src = R.mtex[i]; w >>= 1; h >>= 1;
+    }
+    return src;
+}
+
+/* Mezcla sobre el render target actual (w x h) la imagen desenfocada (o un color, si imagen es
+ * NULL) con el alfa de la mascara. */
+static void mezclar(void *dev, UINT w, UINT h, void *imagen, DWORD color, void *mascara) {
+    RS(RS_ZENABLE, FALSE); RS(RS_STENCILENABLE, FALSE);
+    RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_INVSRCALPHA);
+    if (imagen) {
+        LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, imagen);
+        TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TEXTURE);
+        TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TEXTURE);
+        LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 1, mascara);
+        TSS(1, TSS_COLOROP, TOP_SELECTARG1); TSS(1, TSS_COLORARG1, TA_CURRENT);
+        TSS(1, TSS_ALPHAOP, TOP_SELECTARG1); TSS(1, TSS_ALPHAARG1, TA_TEXTURE);
+        TSS(1, TSS_TEXCOORDINDEX, 0); TSS(1, TSS_TEXTURETRANSFORMFLAGS, 0);
+        TSS(1, TSS_ADDRESSU, 3); TSS(1, TSS_ADDRESSV, 3);
+        TSS(1, TSS_MAGFILTER, 2); TSS(1, TSS_MINFILTER, 2); TSS(1, TSS_MIPFILTER, 0);
+    } else {
+        LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, mascara);
+        TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TFACTOR);
+        TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TEXTURE);
+        RS(RS_TEXTUREFACTOR, color);
+    }
+    quad(dev, w, h, 0, 0);
+    TSS(1, TSS_COLOROP, TOP_DISABLE); TSS(1, TSS_ALPHAOP, TOP_DISABLE);
+    LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 1, NULL);
 }
 
 /* Caja sobre la cancha: medio largo fx, a lo ancho de z0 a z1 (en m); de 1 m bajo el piso hasta
@@ -569,44 +649,51 @@ static void aplicar_blur(void *dev) {
         quad(dev, ds.ancho, ds.alto, 0, 0);
     }
 
-    /* 3. Mezcla por anillo: contador n = cajas que contienen la superficie (N_CAJAS = nitido). */
+    /* 3. Mezcla. Contador n = cajas que contienen la superficie (N_CAJAS = nitido). Por cada ancho
+     * de blur y para la bruma, los pesos por anillo pasan por una mascara suave. */
     RS(RS_COLORWRITEENABLE, 0xF);
+    if (!E.ver_mascara) {
+        float peso[N_CAJAS];
+        void *masc;
+        int nv, hay;
+        for (nv = 1; nv <= 3 && E.activo; nv++) {
+            for (i = 0, hay = 0; i < N_CAJAS; i++) {
+                int k = (int)(E.nivel[i] + 0.5f);
+                k = k < 1 ? 1 : k > 3 ? 3 : k;
+                peso[i] = k == nv ? E.alfa[i] * E.fuerza : 0.0f;
+                if (peso[i] > 0.0f) hay = 1;
+            }
+            if (!hay) continue;
+            masc = mascara_suave(dev, z, ds.ancho, ds.alto, peso);
+            LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, rt, z);
+            mezclar(dev, ds.ancho, ds.alto, R.tex[nv - 1], 0, masc);
+        }
+        /* Bruma: color de aire sobre los anillos de afuera; toma el color de niebla del juego
+         * (cambia con el estadio y la hora) si lo puso. */
+        if (E.bruma) {
+            DWORD color = E.bruma_color ? E.bruma_color : J.niebla ? J.niebla & 0x00FFFFFF : 0x00B4C3D2;
+            for (i = 0, hay = 0; i < N_CAJAS; i++) {
+                peso[i] = E.bruma_alfa[i] * E.bruma_fuerza;
+                if (peso[i] > 0.0f) hay = 1;
+            }
+            if (hay) {
+                masc = mascara_suave(dev, z, ds.ancho, ds.alto, peso);
+                LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, rt, z);
+                mezclar(dev, ds.ancho, ds.alto, NULL, color, masc);
+            }
+        }
+    }
+    /* Mascara a la vista (para ajustar medidas): cada anillo de un color, directo del stencil. */
+    RS(RS_STENCILENABLE, TRUE);
     RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILMASK, 0x7F); RS(RS_STENCILPASS, SOP_KEEP); RS(RS_STENCILWRITEMASK, 0);
     RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_INVSRCALPHA);
-    for (n = 0; n < N_CAJAS && (E.activo || E.ver_mascara); n++) {
+    for (n = 0; n < N_CAJAS && E.ver_mascara; n++) {
         int anillo = N_CAJAS - 1 - n;              /* 0 = el de adentro */
-        float a = E.alfa[anillo] * E.fuerza;
-        DWORD fa = (DWORD)((a < 0 ? 0 : a > 1 ? 1 : a) * 255.0f + 0.5f);
-        RS(RS_STENCILREF, n);
-        if (E.ver_mascara) {
-            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
-            TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TFACTOR);
-            TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
-            RS(RS_TEXTUREFACTOR, (COLOR_MASCARA[anillo] & 0x00FFFFFF) | 0x80000000);
-        } else {
-            {
-                int nv = (int)(E.nivel[anillo] + 0.5f);
-                LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.tex[nv < 1 ? 0 : nv > 3 ? 2 : nv - 1]);
-            }
-            TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TEXTURE);
-            TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
-            RS(RS_TEXTUREFACTOR, fa << 24);
-        }
-        quad(dev, ds.ancho, ds.alto, 0, 0);
-    }
-    /* 4. Bruma: color de aire sobre los anillos de afuera; toma el color de niebla del juego
-     * (cambia con el estadio y la hora) si lo puso. */
-    for (n = 0; n < N_CAJAS && E.bruma && !E.ver_mascara; n++) {
-        int anillo = N_CAJAS - 1 - n;
-        float a = E.bruma_alfa[anillo] * E.bruma_fuerza;
-        DWORD fa = (DWORD)((a < 0 ? 0 : a > 1 ? 1 : a) * 255.0f + 0.5f);
-        DWORD color = E.bruma_color ? E.bruma_color : J.niebla ? J.niebla & 0x00FFFFFF : 0x00B4C3D2;
-        if (!fa) continue;
         RS(RS_STENCILREF, n);
         LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
         TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TFACTOR);
         TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
-        RS(RS_TEXTUREFACTOR, (fa << 24) | color);
+        RS(RS_TEXTUREFACTOR, (COLOR_MASCARA[anillo] & 0x00FFFFFF) | 0x80000000);
         quad(dev, ds.ancho, ds.alto, 0, 0);
     }
     if (E.ver_mascara) {   /* lo que queda nitido, en violeta */
