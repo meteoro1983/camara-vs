@@ -193,7 +193,9 @@ static char g_ini[MAX_PATH];
  * desenfocar a los jugadores cercanos; en los fondos desde la linea de gol (la red apenas). */
 static const float LEJOS[N_CAJAS]  = {27.0f, 30.0f, 34.0f, 39.0f, 45.0f, 52.0f};
 static const float CERCA[N_CAJAS]  = {34.0f, 38.0f, 42.0f, 47.0f, 53.0f, 60.0f};
-static const float FONDO[N_CAJAS]  = {52.5f, 56.0f, 60.0f, 65.0f, 71.0f, 78.0f};
+/* Detras de los arcos los anillos se abren mas: con la camara a la espalda del arquero la
+ * tribuna de enfrente (60-80 m) queda con blur medio y no con el mas espeso. */
+static const float FONDO[N_CAJAS]  = {52.5f, 57.0f, 64.0f, 76.0f, 92.0f, 115.0f};
 static const float ALFA[N_CAJAS]   = {0.15f, 0.30f, 0.45f, 0.60f, 0.80f, 1.00f};
 /* Bruma: solo los anillos de afuera (tribunas altas), muy suave. */
 static const float BRUMA[N_CAJAS]  = {0.0f, 0.0f, 0.05f, 0.10f, 0.16f, 0.24f};
@@ -685,7 +687,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
         if (juego_en_foco() && flanco(E.t_guia, &a_guia)) {
             E.guia_fija = !E.guia_fija;
             WritePrivateProfileStringA("efectos", "guia_fija", E.guia_fija ? "1" : "0", g_ini);
-            g_guia.tecla_ms = GetTickCount();
+            g_guia.tecla_ms = 0;   /* al soltarla se oculta en el acto */
         }
         if (juego_en_foco() && flanco(E.t_activar, &a_activar)) {
             g_guia.tecla_ms = GetTickCount();
