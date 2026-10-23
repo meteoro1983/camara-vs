@@ -190,15 +190,25 @@ static BYTE *g_estadio;          /* NULL si no se reconocio la funcion de visibi
 
 #define MEDIO_LARGO_M 50.0f      /* la pelota anda por x = +-49 m cerca de los arcos */
 #define MEDIO_ANCHO_M 34.0f      /* y por z = +-34 m en las lineas de costado */
+#define MEDIO_LARGO_GOL 52.5f    /* lineas de gol (medido en el exe: 13440 u) */
 #define DIST_REF_M    45.0f      /* distancia ojo-pelota para la que vale el zoom tal cual */
 #define SEGUIR_ANCHO  0.6f       /* fraccion del movimiento a lo ancho que sigue el riel */
 #define PLANO_LEJANO  60000.0f   /* el juego usa 16000 (~62 m): las tomas bajas miran mas lejos */
 #define ZOOM_LATERAL  650.0f
 #define MIRA_TECHO_M  8.0f       /* en los globos la toma no termina mirando el cielo */
 #define ADELANTO_MAX_M 6.0f      /* tope del adelanto del punto de mira */
-#define TIRO_MS       20.0f      /* pelota mas rapida que esto (m/s): disparo o pelotazo */
+/* Medido en partido: los pases fuertes pasan los 20 m/s (p90 22,8, max 29), asi que un disparo
+ * se reconoce por la trayectoria: rapida y llegando al arco en poco tiempo. */
+#define TIRO_MS       20.0f      /* disparo: mas rapida que esto (m/s)... */
+#define TIRO_DESDE_M  16.0f      /* ...desde mas alla de esta distancia al medio (m)... */
+#define TIRO_ANCHO_M  9.0f       /* ...llegando a la linea de gol a menos de esto del centro... */
+#define TIRO_LLEGA_S  1.3f       /* ...en menos de este tiempo */
+#define CENTRO_M      4.0f       /* centro o pelotazo: mas alta que esto (m)... */
+#define CENTRO_MS     10.0f      /* ...y mas rapida que esto (m/s) */
 #define TIRO_S        1.2f       /* s que dura la toma de disparo despues del ultimo pique rapido */
-#define ZOOM_TIRO     0.85f      /* en los disparos el zoom se abre un poco en vez de perseguir */
+#define ZOOM_TIRO     0.70f      /* en disparos y centros el zoom se abre */
+#define ADELANTO_TIRO 0.45f      /* s que se adelanta el punto de mira sobre la trayectoria */
+#define ADELANTO_TIRO_MAX_M 10.0f
 
 enum { JUEGO, LATERAL, ARQUERO };
 
@@ -214,7 +224,8 @@ static int g_estadio_puesto = -1;
 static struct {
     int iniciado, modo_ant, dueno_ant;
     float s_obj[3], s_ojo[3], v_obj[3], v_ojo[3], vel_f[3], pel_ant[3], giro, posesion, en_manos_t, lado, lado_t;
-    float adel[3], v_adel[3], tiro_t, zoom_k;
+    float adel[3], v_adel[3], vel_r[3], tiro_t, zoom_k;
+    int tiro;                    /* 1 = disparo, 2 = centro o pelotazo */
     LARGE_INTEGER antes;
 } S;
 
@@ -325,12 +336,26 @@ static int calcular(void) {
     for (i = 0; i < 3; i++) vel[i] = (pel[i] - ant[i]) * 60.0f;   /* unidades por segundo */
     /* La anticipacion usa la velocidad filtrada: la cruda salta con cada toque, sobre todo cuando
      * la pelota llega al pie (cambia de golpe de direccion y rapidez). */
-    if (!S.iniciado) { memcpy(S.vel_f, vel, sizeof vel); S.zoom_k = 1.0f; S.tiro_t = 0.0f; }
+    if (!S.iniciado) { memcpy(S.vel_f, vel, sizeof vel); memcpy(S.vel_r, vel, sizeof vel); S.zoom_k = 1.0f; S.tiro_t = 0.0f; S.tiro = 0; }
     k = 1.0f - expf(-dt / 0.35f);
     for (i = 0; i < 3; i++) S.vel_f[i] += (vel[i] - S.vel_f[i]) * k;
+    /* en los disparos la trayectoria es limpia: se sigue con la velocidad casi cruda */
+    k = 1.0f - expf(-dt / 0.08f);
+    for (i = 0; i < 3; i++) S.vel_r[i] += (vel[i] - S.vel_r[i]) * k;
     rapidez = sqrtf(vel[0] * vel[0] + vel[2] * vel[2]) / M;      /* m/s en el plano */
-    /* Disparo o pelotazo: no se persigue la pelota; se abre un poco el zoom. */
-    S.tiro_t = rapidez > TIRO_MS ? TIRO_S : (S.tiro_t > dt ? S.tiro_t - dt : 0.0f);
+    /* Disparo o centro: la camara acompana la trayectoria, adelantandose, y abre el zoom. Los
+     * pases a ras del piso siguen con la toma normal. */
+    {
+        int tiro = 0;
+        if (rapidez > TIRO_MS && fabsf(pel[0]) > TIRO_DESDE_M * M && fabsf(vel[0]) > 1.0f) {
+            float linea = vel[0] > 0 ? MEDIO_LARGO_GOL * M : -MEDIO_LARGO_GOL * M;
+            float t = (linea - pel[0]) / vel[0];
+            if (t > 0.0f && t < TIRO_LLEGA_S && fabsf(pel[2] + vel[2] * t) < TIRO_ANCHO_M * M) tiro = 1;
+        }
+        if (!tiro && -pel[1] > CENTRO_M * M && rapidez > CENTRO_MS) tiro = 2;
+        if (tiro) { S.tiro_t = TIRO_S; if (tiro == 1 || S.tiro != 1) S.tiro = tiro; }
+        else if ((S.tiro_t -= dt) <= 0.0f) { S.tiro_t = 0.0f; S.tiro = 0; }
+    }
     fase = *g_fase;
     dueno = *g_toque;
 
@@ -353,14 +378,18 @@ static int calcular(void) {
     S.en_manos_t = en_manos ? S.en_manos_t + dt : 0.0f;
     S.modo_ant = modo;
 
-    /* Adelanto con su propio resorte y con tope: sin saltos cuando la pelota llega al pie. */
+    /* Adelanto con su propio resorte y con tope: sin saltos cuando la pelota llega al pie. En
+     * disparos y centros se adelanta sobre la trayectoria para no quedar atras. */
     {
-        float meta[3] = {S.vel_f[0] * A.adelanto, 0.0f, S.vel_f[2] * A.adelanto}, largo;
-        if (S.tiro_t > 0.0f) meta[0] = meta[2] = 0.0f;
+        int tiro = S.tiro_t > 0.0f;
+        float meta[3], largo, tope = (tiro ? ADELANTO_TIRO_MAX_M : ADELANTO_MAX_M) * M;
+        meta[0] = tiro ? S.vel_r[0] * ADELANTO_TIRO : S.vel_f[0] * A.adelanto;
+        meta[1] = 0.0f;
+        meta[2] = tiro ? S.vel_r[2] * ADELANTO_TIRO : S.vel_f[2] * A.adelanto;
         largo = sqrtf(meta[0] * meta[0] + meta[2] * meta[2]);
-        if (largo > ADELANTO_MAX_M * M) { meta[0] *= ADELANTO_MAX_M * M / largo; meta[2] *= ADELANTO_MAX_M * M / largo; }
+        if (largo > tope) { meta[0] *= tope / largo; meta[2] *= tope / largo; }
         if (!S.iniciado) { memcpy(S.adel, meta, sizeof meta); memset(S.v_adel, 0, sizeof S.v_adel); }
-        for (i = 0; i < 3; i += 2) resorte(&S.adel[i], &S.v_adel[i], meta[i], 0.5f, dt);
+        for (i = 0; i < 3; i += 2) resorte(&S.adel[i], &S.v_adel[i], meta[i], tiro ? 0.2f : 0.5f, dt);
     }
     q_obj[0] = pel[0] + S.adel[0];
     q_obj[1] = 0.5f * pel[1] - 0.5f * M;
@@ -371,10 +400,10 @@ static int calcular(void) {
     }
     if (!S.iniciado) { memcpy(S.s_obj, q_obj, sizeof q_obj); memset(S.v_obj, 0, sizeof S.v_obj); }
     retraso = modo == JUEGO ? A.retraso : 0.45f;
-    /* Movimientos chicos flotan; si la pelota se escapa del cuadro el travelling acelera, salvo en
-     * los disparos: ahi la camara va mas tranquila y el zoom abierto se encarga del cuadro. */
-    if (S.tiro_t > 0.0f) retraso *= 1.5f;
-    else {
+    /* Movimientos chicos flotan; si la pelota se escapa del cuadro el travelling acelera. En
+     * disparos y centros la camara va mas rapida para acompanar la trayectoria. */
+    if (S.tiro_t > 0.0f) retraso *= S.tiro == 1 ? 0.6f : 0.85f;
+    {
         float err = (fabsf(q_obj[0] - S.s_obj[0]) + fabsf(q_obj[2] - S.s_obj[2])) / M;
         retraso /= 1.0f + (err > 4.0f ? (err - 4.0f) / 5.0f : 0.0f);
     }
@@ -420,7 +449,7 @@ static int calcular(void) {
     /* Zoom compensado por la distancia real: jugadores de tamano parecido en toda la cancha. */
     dist = sqrtf((S.s_ojo[0] - mira[0]) * (S.s_ojo[0] - mira[0]) + (S.s_ojo[1] - mira[1]) * (S.s_ojo[1] - mira[1]) +
                  (S.s_ojo[2] - mira[2]) * (S.s_ojo[2] - mira[2])) / (M * DIST_REF_M);
-    S.zoom_k += ((S.tiro_t > 0.0f ? ZOOM_TIRO : 1.0f) - S.zoom_k) * (1.0f - expf(-dt / 0.5f));
+    S.zoom_k += ((S.tiro_t > 0.0f ? ZOOM_TIRO : 1.0f) - S.zoom_k) * (1.0f - expf(-dt / 0.35f));
     zoom = modo == LATERAL ? ZOOM_LATERAL : A.zoom * clampf(dist, 0.6f, 1.8f) * S.zoom_k;
     memcpy(g_nuevo, S.s_ojo, 12); memcpy(g_nuevo + 3, mira, 12);
     g_nuevo[6] = zoom; g_nuevo[7] = PLANO_LEJANO;
@@ -430,7 +459,7 @@ static int calcular(void) {
     {
         const float *usada = va ? g_nuevo : g_juego;
         EstadoGuia *e = &g_guia;
-        e->camara_activa = A.activa; e->en_uso = va; e->modo = modo; e->tiro = S.tiro_t > 0.0f;
+        e->camara_activa = A.activa; e->en_uso = va; e->modo = modo; e->tiro = S.tiro_t > 0.0f ? S.tiro : 0;
         e->altura = A.altura; e->distancia = A.distancia; e->zoom = A.zoom; e->retraso = A.retraso;
         for (i = 0; i < 3; i++) { e->ojo[i] = usada[i] / M; e->mira[i] = usada[3 + i] / M; e->pelota[i] = pel[i] / M; }
         e->t_activar = A.t_activar; e->t_altura_menos = A.t_altura_menos; e->t_altura_mas = A.t_altura_mas;

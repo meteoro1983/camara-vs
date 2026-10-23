@@ -143,7 +143,7 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
         barra_altura(dc, b, e);
         texto(dc, 14, 226, APAGADO, !e->camara_activa ? "camara del juego" :
               !e->en_uso ? "camara del juego (repeticion / saque)" :
-              e->modo == GUIA_LATERAL ? "lateral en tercera persona" : e->tiro ? "disparo: zoom abierto" : "siguiendo la pelota");
+              e->modo == GUIA_LATERAL ? "lateral en tercera persona" : e->tiro == 1 ? "disparo: zoom abierto" : e->tiro ? "centro / pelotazo: zoom abierto" : "siguiendo la pelota");
     } else texto(dc, 14, 60, APAGADO, "camara no disponible en este exe");
 
     nombre_tecla(e->t_activar, k);
