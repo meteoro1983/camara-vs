@@ -289,6 +289,7 @@ static void teclas(void) {
         A.activa = !A.activa; S.iniciado = 0;
         WritePrivateProfileStringA("camara", "activa", A.activa ? "1" : "0", g_ini);
     }
+    if (g_guia.menu_abierto) t[1] = t[2] = t[5] = t[6] = 0;   /* esas teclas manejan el menu de efectos */
     if (t[1]) { A.altura = A.altura > 2.0f ? A.altura - 1.0f : 1.0f; ini_guardar("altura", A.altura); }
     if (t[2]) { A.altura += 1.0f; ini_guardar("altura", A.altura); }
     if (t[3]) { A.distancia = A.distancia > 6.0f ? A.distancia - 2.0f : 4.0f; ini_guardar("distancia", A.distancia); }

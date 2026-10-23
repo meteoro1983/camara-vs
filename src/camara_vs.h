@@ -25,6 +25,8 @@ typedef struct {
     int blur_ok, blur_activo, bruma_activa, color_activo, t_blur, t_bruma, t_color, t_guia;
     int cancha, t_cancha;     /* bit 0 = franjas de cesped, bit 1 = sombra del estadio, bit 2 = perimetro */
     int noche, luces;         /* deteccion automatica de noche; bloom + destellos de noche */
+    /* menu de efectos (F2): mientras esta abierto, F3/F4 eligen y F7/F8 cambian (no mueven la camara) */
+    int menu_abierto, menu_item, aniso, mascara;
     /* GetTickCount de la ultima tecla: la guia se muestra unos segundos */
     DWORD tecla_ms;
 } EstadoGuia;

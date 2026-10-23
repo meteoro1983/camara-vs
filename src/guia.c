@@ -115,6 +115,42 @@ static void barra_altura(HDC dc, RECT r, const EstadoGuia *e) {
     DeleteObject(fondo); DeleteObject(marca);
 }
 
+/* Menu de efectos (F2) en la columna de la derecha: item elegido resaltado. */
+static void menu_efectos(HDC dc, int x, int y, int paso, const EstadoGuia *e) {
+    static const char *nombres[7] = {"Blur tribunas", "Bruma", "Color y nitidez", "Cancha",
+                                     "Luces de noche", "Filtro anisotropico", "Mascara (ajuste)"};
+    char v[7][40], k[32], s[64];
+    int i, c = e->cancha & 7;
+    strcpy(v[0], e->blur_activo == 2 ? "PRESET 2" : e->blur_activo ? "PRESET 1" : "NO");
+    strcpy(v[1], e->bruma_activa == 2 ? "PRESET 2" : e->bruma_activa ? "PRESET 1" : "NO");
+    strcpy(v[2], e->color_activo ? "SI" : "NO");
+    strcpy(v[3], c == 7 ? "TODO" : c == 5 ? "SIN SOMBRA" : c ? "PERSONAL" : "NO");
+    sprintf(v[4], "%s%s", e->luces ? "SI" : "NO", e->noche ? " (noche)" : " (dia)");
+    strcpy(v[5], e->aniso > 1 ? "SI" : "NO");
+    strcpy(v[6], e->mascara ? "SI" : "NO");
+    texto(dc, x, y, ACENTO, "EFECTOS");
+    y += paso + 4;
+    for (i = 0; i < 7; i++) {
+        int sel = i == e->menu_item;
+        if (sel) {
+            RECT r = {x - 6, y - 1, x + 300, y + paso - 1};
+            HBRUSH b = CreateSolidBrush(RGB(60, 70, 96));
+            FillRect(dc, &r, b); DeleteObject(b);
+        }
+        texto(dc, x, y, sel ? ACENTO : LINEA, sel ? ">" : " ");
+        texto(dc, x + 16, y, LINEA, nombres[i]);
+        texto(dc, x + 196, y, strcmp(v[i], "NO") && strncmp(v[i], "NO ", 3) ? ENCENDIDO : APAGADO, v[i]);
+        y += paso;
+    }
+    y += 6;
+    par_teclas(e->t_zoom_abrir, e->t_zoom_cerrar, k);
+    sprintf(s, "%s elegir", k); texto(dc, x, y, APAGADO, s); y += paso;
+    par_teclas(e->t_altura_menos, e->t_altura_mas, k);
+    sprintf(s, "%s cambiar", k); texto(dc, x, y, APAGADO, s); y += paso;
+    nombre_tecla(e->t_blur, k);
+    sprintf(s, "%s cerrar", k); texto(dc, x, y, APAGADO, s);
+}
+
 void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     BITMAPINFO bi;
     void *bits = NULL;
@@ -147,39 +183,17 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
         RECT r = {10, 44, 236, 214}, b = {252, 50, 259, 204};
         esquema(dc, r, e);
         barra_altura(dc, b, e);
-        texto(dc, 14, 226, APAGADO, !e->camara_activa ? "camara del juego" :
+        if (!e->menu_abierto) texto(dc, 14, 226, APAGADO, !e->camara_activa ? "camara del juego" :
               !e->en_uso ? "camara del juego (repeticion / saque)" :
               e->modo == GUIA_LATERAL ? "lateral en tercera persona" : e->tiro == 1 ? "disparo: zoom abierto" : e->tiro ? "centro / pelotazo: zoom abierto" : "siguiendo la pelota");
     } else texto(dc, 14, 60, APAGADO, "camara no disponible en este exe");
 
+    if (e->menu_abierto) {
+        menu_efectos(dc, x, y, paso, e);
+        goto fin;
+    }
     nombre_tecla(e->t_activar, k);
     fila(dc, x, y, k, "Camara VS", e->camara_activa ? "ACTIVA" : "APAGADA", e->camara_activa ? ENCENDIDO : APAGADO);
-    y += paso;
-    nombre_tecla(e->t_blur, k);
-    fila(dc, x, y, k, "Blur tribunas", !e->blur_ok ? "NO DISPONIBLE" : e->blur_activo == 2 ? "PRESET 2" : e->blur_activo ? "PRESET 1" : "NO",
-         e->blur_ok && e->blur_activo ? ENCENDIDO : APAGADO);
-    y += paso;
-    nombre_tecla(e->t_bruma, s);
-    fila(dc, x, y, s, "Bruma", !e->blur_ok ? "NO DISPONIBLE" : e->bruma_activa == 2 ? "PRESET 2" : e->bruma_activa ? "PRESET 1" : "NO",
-         e->blur_ok && e->bruma_activa ? ENCENDIDO : APAGADO);
-    y += paso;
-    nombre_tecla(e->t_color, s);
-    fila(dc, x, y, s, "Color/nitidez", !e->blur_ok ? "NO DISPONIBLE" : e->color_activo ? "SI" : "NO",
-         e->blur_ok && e->color_activo ? ENCENDIDO : APAGADO);
-    y += paso;
-    {
-        char v[48] = "";
-        int c = e->cancha & 7;
-        if (c == 7) strcpy(v, e->noche ? "TODO (noche)" : "TODO");
-        else if (c == 5) strcpy(v, "SIN SOMBRA");
-        else if (c) sprintf(v, "%s%s%s", c & 1 ? "F" : "", c & 2 ? "S" : "", c & 4 ? "B" : "");
-        nombre_tecla(e->t_cancha, s);
-        fila(dc, x, y, s, "Cancha", !e->blur_ok ? "NO DISPONIBLE" : v[0] ? v : "NO",
-             e->blur_ok && e->cancha ? ENCENDIDO : APAGADO);
-    }
-    y += paso;
-    fila(dc, x, y, "auto", "Dia / noche", !e->blur_ok ? "-" : e->noche ? (e->luces ? "NOCHE + LUCES" : "NOCHE") : "DIA",
-         e->blur_ok && e->noche && e->luces ? ENCENDIDO : LINEA);
     y += paso + 4;
     par_teclas(e->t_altura_menos, e->t_altura_mas, k); sprintf(s, "%.0f m", e->altura);
     fila(dc, x, y, k, "Altura", s, LINEA); y += paso;
@@ -193,8 +207,11 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     fila(dc, x, y, k, "Retraso", s, LINEA); y += paso;
     nombre_tecla(e->t_estandar, k);
     fila(dc, x, y, k, "Estandar", "", LINEA); y += paso + 6;
+    nombre_tecla(e->t_blur, k);
+    fila(dc, x, y, k, "Efectos", !e->blur_ok ? "NO DISPONIBLE" : "MENU", e->blur_ok ? ENCENDIDO : APAGADO); y += paso;
     nombre_tecla(e->t_guia, k);
     fila(dc, x, y, k, "Fijar guia", "", APAGADO);
+fin:
     SelectObject(dc, vieja);
     DeleteObject(chica); DeleteObject(grande);
 
