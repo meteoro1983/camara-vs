@@ -72,10 +72,11 @@ Con el juego abierto, ejecutá `inyectar.exe` (en la misma carpeta que `camara_v
 | F7 / F8 | Altura − / + 1 m |
 | F10 / F11 | Distancia del riel − / + 2 m |
 | F3 / F4 | Zoom más abierto / más cerrado |
+| Shift+F3 / Shift+F4 | Giro steadycam hacia los arcos − / + (cerca: tercera persona; lejos: transmisión) |
 | F6 | Suavidad del travelling (0,2 · 0,35 · 0,6 · 1 s) |
 | F5 | Volver a la configuración estándar de Cámara VS |
-| **F2** | Blur de tribunas sí / no |
-| Ctrl+F2 | Bruma sí / no |
+| **F2** | Blur de tribunas: apagado → preset 1 → preset 2 |
+| Ctrl+F2 | Bruma: apagada → preset 1 → preset 2 |
 | Shift+F2 | Color sí / no |
 | Ctrl+Shift+F2 | Ver los anillos del blur en colores (para ajustar medidas) |
 | **F1** | Fijar / ocultar la guía en pantalla (sola, aparece unos segundos al tocar cualquier tecla) |
@@ -94,6 +95,13 @@ Los ajustes se guardan solos en `camara_vs.ini`. Ahí también se pueden cambiar
 Todo se ubica **por firmas** (patrones de bytes) y no por direcciones fijas, así que debería andar también con exes parcheados. Si no encuentra algo, lo dice en `camara_vs.log` (junto a la DLL) y deja la cámara del juego.
 
 Los efectos (blur, bruma, color y guía) necesitan **Kitserver** y andan tanto con la `d3d8.dll` de Windows como con **dgVoodoo**. Con `inyectar.exe`, sin Kitserver, solo funciona la cámara.
+
+## Novedades 1.2.1
+
+- **Segundo preset** de blur (entra más en la cancha) y de bruma (más baja y marcada): F2 / Ctrl+F2 una segunda vez.
+- **Shift+F3 / Shift+F4**: giro steadycam hacia los arcos; con la cámara cerca la lleva a espaldas de los jugadores, estilo tercera persona.
+- Soporte para **add-ons de público**: si hay un `publico_vs.dat` en la carpeta kitserver, el módulo recolorea el público con sus colores verdaderos (el juego lo tiñe de gris/azul en algunas tribunas). El add-on con gráficos no se distribuye acá.
+- Arreglos: enganches que Kitserver toma antes (SetRenderState, SetTexture, texturas) y reutilización de direcciones de texturas.
 
 ## Novedades 1.2.0
 

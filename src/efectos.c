@@ -186,9 +186,10 @@ static struct {
     float fuerza, bruma_fuerza;
     DWORD bruma_color;                        /* 0 = el color de niebla del juego */
     /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
-    float lejos[N_CAJAS], cerca[N_CAJAS], fondo[N_CAJAS];
-    float alfa[N_CAJAS], bruma_alfa[N_CAJAS]; /* mezcla por anillo, de adentro hacia afuera */
-    float nivel[N_CAJAS];                     /* blur por anillo: 1 = escena a 1/2, 2 = 1/4, 3 = 1/8 */
+    /* [0] = preset 1, [1] = preset 2 (F2 / Ctrl+F2 una segunda vez) */
+    float lejos[2][N_CAJAS], cerca[2][N_CAJAS], fondo[2][N_CAJAS];
+    float alfa[2][N_CAJAS], bruma_alfa[2][N_CAJAS]; /* mezcla por anillo, de adentro hacia afuera */
+    float nivel[2][N_CAJAS];                  /* blur por anillo: 1 = escena a 1/2, 2 = 1/4, 3 = 1/8 */
 } E;
 static char g_ini[MAX_PATH];
 
@@ -206,6 +207,14 @@ static const float ALFA[N_CAJAS]   = {0.30f, 0.40f, 0.45f, 0.60f, 0.80f, 1.00f};
 static const float NIVEL[N_CAJAS]  = {2.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f};
 /* Bruma: solo los anillos de afuera (tribunas altas), muy suave. */
 static const float BRUMA[N_CAJAS]  = {0.0f, 0.0f, 0.05f, 0.10f, 0.16f, 0.24f};
+/* Preset 2: el blur entra mas en la cancha (lado lejano desde la linea del area grande, a 20 m del
+ * centro; lado de la camara 3,75 m adentro; fondos 2 m antes de la linea de gol), un poco mas
+ * fuerte en general pero con la primera banda mas suave. Bruma mas baja y menos sutil. */
+static const float LEJOS2[N_CAJAS] = {20.0f, 25.0f, 31.0f, 37.0f, 44.0f, 52.0f};
+static const float CERCA2[N_CAJAS] = {30.25f, 34.0f, 39.0f, 45.0f, 52.0f, 60.0f};
+static const float FONDO2[N_CAJAS] = {50.5f, 56.0f, 63.0f, 75.0f, 91.0f, 114.0f};
+static const float ALFA2[N_CAJAS]  = {0.20f, 0.45f, 0.55f, 0.70f, 0.90f, 1.00f};
+static const float BRUMA2[N_CAJAS] = {0.0f, 0.06f, 0.12f, 0.20f, 0.28f, 0.36f};
 #define ALTO_CAJA_M 80.0f
 
 static void leer_lista(const char *clave, float *v, const float *def) {
@@ -249,12 +258,18 @@ static void leer_ajustes(void) {
     GetPrivateProfileStringA("efectos", "guia", "0x70", s, sizeof s, g_ini);
     E.t_guia = (int)strtol(s, NULL, 0);
     E.guia_fija = GetPrivateProfileIntA("efectos", "guia_fija", 0, g_ini);
-    leer_lista("lado_lejano", E.lejos, LEJOS);
-    leer_lista("lado_camara", E.cerca, CERCA);
-    leer_lista("fondos", E.fondo, FONDO);
-    leer_lista("mezcla", E.alfa, ALFA);
-    leer_lista("nivel", E.nivel, NIVEL);
-    leer_lista("bruma_mezcla", E.bruma_alfa, BRUMA);
+    leer_lista("lado_lejano", E.lejos[0], LEJOS);
+    leer_lista("lado_camara", E.cerca[0], CERCA);
+    leer_lista("fondos", E.fondo[0], FONDO);
+    leer_lista("mezcla", E.alfa[0], ALFA);
+    leer_lista("nivel", E.nivel[0], NIVEL);
+    leer_lista("bruma_mezcla", E.bruma_alfa[0], BRUMA);
+    leer_lista("lado_lejano_2", E.lejos[1], LEJOS2);
+    leer_lista("lado_camara_2", E.cerca[1], CERCA2);
+    leer_lista("fondos_2", E.fondo[1], FONDO2);
+    leer_lista("mezcla_2", E.alfa[1], ALFA2);
+    leer_lista("nivel_2", E.nivel[1], NIVEL);
+    leer_lista("bruma_mezcla_2", E.bruma_alfa[1], BRUMA2);
 }
 
 /* ---------------------------------------------------------------- estado */
@@ -568,7 +583,7 @@ static void aplicar_blur(void *dev) {
     DescSuperficie8 ds;
     float cam[3];
     static const float identidad[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    int i, n, lado;
+    int i, n, lado, pb = E.activo > 1;
 
     if (FAILED(LLAMAR(GetSurface_t, dev, DEV_GetRenderTarget)(dev, &rt)) || !rt) return;
     LLAMAR(GetSurface_t, dev, DEV_GetDepthStencilSurface)(dev, &z);
@@ -644,8 +659,8 @@ static void aplicar_blur(void *dev) {
         J.proy[12], J.proy[13], J.proy[14], J.proy[15]);
     lado = cam[2] >= 0.0f ? 1 : -1;           /* lado de la cancha donde esta la camara */
     for (i = 0; i < N_CAJAS; i++) {
-        float fx = E.fondo[i];
-        float z0 = lado > 0 ? -E.lejos[i] : -E.cerca[i], z1 = lado > 0 ? E.cerca[i] : E.lejos[i];
+        float fx = E.fondo[pb][i];
+        float z0 = lado > 0 ? -E.lejos[pb][i] : -E.cerca[pb][i], z1 = lado > 0 ? E.cerca[pb][i] : E.lejos[pb][i];
         /* caras detras de la superficie: invertir el bit 7 */
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZ);
         RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_GREATER);
@@ -677,9 +692,9 @@ static void aplicar_blur(void *dev) {
         int nv, hay;
         for (nv = 1; nv <= 3 && E.activo; nv++) {
             for (i = 0, hay = 0; i < N_CAJAS; i++) {
-                int k = (int)(E.nivel[i] + 0.5f);
+                int k = (int)(E.nivel[pb][i] + 0.5f);
                 k = k < 1 ? 1 : k > 3 ? 3 : k;
-                peso[i] = k == nv ? E.alfa[i] * E.fuerza : 0.0f;
+                peso[i] = k == nv ? E.alfa[pb][i] * E.fuerza : 0.0f;
                 if (peso[i] > 0.0f) hay = 1;
             }
             if (!hay) continue;
@@ -692,7 +707,7 @@ static void aplicar_blur(void *dev) {
         if (E.bruma) {
             DWORD color = E.bruma_color ? E.bruma_color : J.niebla ? J.niebla & 0x00FFFFFF : 0x00B4C3D2;
             for (i = 0, hay = 0; i < N_CAJAS; i++) {
-                peso[i] = E.bruma_alfa[i] * E.bruma_fuerza;
+                peso[i] = E.bruma_alfa[E.bruma > 1][i] * E.bruma_fuerza;
                 if (peso[i] > 0.0f) hay = 1;
             }
             if (hay) {
@@ -806,8 +821,9 @@ static HRESULT WINAPI h_BeginScene(void *d) {
             g_guia.tecla_ms = GetTickCount();
             int ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0, shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
             if (ctrl && !shift) {
-                E.bruma = !E.bruma;
-                WritePrivateProfileStringA("efectos", "bruma", E.bruma ? "1" : "0", g_ini);
+                char v[4];
+                E.bruma = (E.bruma + 1) % 3;              /* apagada -> preset 1 -> preset 2 */
+                WritePrivateProfileStringA("efectos", "bruma", (sprintf(v, "%d", E.bruma), v), g_ini);
             } else if (shift && !ctrl) {
                 E.color = !E.color;
                 WritePrivateProfileStringA("efectos", "color", E.color ? "1" : "0", g_ini);
@@ -815,8 +831,9 @@ static HRESULT WINAPI h_BeginScene(void *d) {
                 E.ver_mascara = !E.ver_mascara;
                 WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
             } else {
-                E.activo = !E.activo;
-                WritePrivateProfileStringA("efectos", "blur", E.activo ? "1" : "0", g_ini);
+                char v[4];
+                E.activo = (E.activo + 1) % 3;            /* apagado -> preset 1 -> preset 2 */
+                WritePrivateProfileStringA("efectos", "blur", (sprintf(v, "%d", E.activo), v), g_ini);
             }
         }
         g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.color_activo = E.color && !g_ps_fallo; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
@@ -959,6 +976,7 @@ static BYTE *g_d3d8, *g_d3d8_fin;
 #define EN_D3D8(p) ((BYTE *)(p) >= g_d3d8 && (BYTE *)(p) < g_d3d8_fin)
 static int hotpatcheable(const BYTE *fn);
 static int hotpatch(BYTE *fn, void *gancho);
+static void poner_puntero(void **donde, void *valor);
 static BYTE *original_en_d3d8(BYTE *fn, BYTE ***ranura, int prof);
 typedef HRESULT (WINAPI *TexLock_t)(void *, UINT, RectBloqueado8 *, const RECT *, DWORD);
 typedef HRESULT (WINAPI *TexUnlock_t)(void *, UINT);
@@ -1127,11 +1145,18 @@ static HRESULT WINAPI h_CreateTexture(void *d, UINT w, UINT h, UINT niveles, DWO
         /* si Kitserver ya los engancho, se sigue su cadena hasta las funciones reales de d3d8 */
         BYTE *lk = original_en_d3d8((BYTE *)VT(*tex)[TEX_LockRect], &r1, 0);
         BYTE *ul = original_en_d3d8((BYTE *)VT(*tex)[TEX_UnlockRect], &r2, 0);
-        if (EN_D3D8(lk) && EN_D3D8(ul) && hotpatcheable(lk) && hotpatcheable(ul)) {
+        void **tvt = VT(*tex);
+        if (lk && ul && hotpatcheable(lk) && hotpatcheable(ul)) {
             g_tex_lock = (TexLock_t)(lk + 2); g_tex_unlock = (TexUnlock_t)(ul + 2);
             hotpatch(lk, h_TexLock); hotpatch(ul, h_TexUnlock);
-            anotar("publico: Lock/Unlock de texturas enganchados");
-        } else anotar("publico: no pude enganchar Lock/Unlock de texturas");
+            anotar("publico: Lock/Unlock de texturas enganchados (hotpatch)");
+        } else if (lk && ul) {
+            /* dgVoodoo: vtable de texturas fijo en la dll, o puntero donde Kitserver guarda la real */
+            g_tex_lock = (TexLock_t)lk; g_tex_unlock = (TexUnlock_t)ul;
+            poner_puntero(r1 ? (void **)r1 : &tvt[TEX_LockRect], h_TexLock);
+            poner_puntero(r2 ? (void **)r2 : &tvt[TEX_UnlockRect], h_TexUnlock);
+            anotar("publico: Lock/Unlock de texturas enganchados (puntero)");
+        } else { g_tex_lock = (TexLock_t)1; anotar("publico: no pude enganchar Lock/Unlock de texturas"); }
     }
     return hr;
 }
@@ -1270,6 +1295,12 @@ int efectos_iniciar(const char *ini) {
             g_orig[i] = fn + 2;
             g_destino[i] = gancho ? gancho : fn + 2;
             if (hotpatch(fn, st)) { n_hot++; continue; }
+        }
+        if (i == DEV_CreateTexture && ranura_crear) {   /* dgVoodoo: Kitserver guarda la real ahi */
+            g_orig[i] = fn;
+            g_destino[i] = gancho;
+            poner_puntero((void **)ranura_crear, st);
+            n_vt++; continue;
         }
         if (i == DEV_Reset && ranura_reset) {
             g_orig[i] = fn;

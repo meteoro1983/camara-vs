@@ -291,8 +291,14 @@ static void teclas(void) {
     if (t[2]) { A.altura += 1.0f; ini_guardar("altura", A.altura); }
     if (t[3]) { A.distancia = A.distancia > 6.0f ? A.distancia - 2.0f : 4.0f; ini_guardar("distancia", A.distancia); }
     if (t[4]) { A.distancia += 2.0f; ini_guardar("distancia", A.distancia); }
-    if (t[5]) { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
-    if (t[6]) { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+        /* Shift + zoom = giro steadycam (cuanto mira hacia el arco, a las espaldas de los jugadores) */
+        if (t[5]) { A.giro = A.giro > 0.05f ? A.giro - 0.05f : 0.0f; ini_guardar("giro", A.giro); }
+        if (t[6]) { A.giro = A.giro < 0.95f ? A.giro + 0.05f : 1.0f; ini_guardar("giro", A.giro); }
+    } else {
+        if (t[5]) { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
+        if (t[6]) { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
+    }
     if (t[7]) {
         static const float r[] = {0.2f, 0.35f, 0.6f, 1.0f};
         int i, sig = 1;
@@ -431,6 +437,12 @@ static int calcular(void) {
     riel = lado * (MEDIO_ANCHO_M + A.distancia) * M + SEGUIR_ANCHO * S.s_obj[2];
     sep = fabsf(riel - S.s_obj[2]);
     q_ojo[0] = S.s_obj[0] - S.giro * sep; q_ojo[1] = -A.altura * M; q_ojo[2] = riel;
+    {
+        /* Con la camara cerca (poca distancia o zoom cerrado) el giro tambien la mete en la cancha,
+         * detras de los jugadores, estilo tercera persona; lejos queda el giro de transmision. */
+        float cerca = clampf((1.0f - A.distancia / 30.0f) * clampf(A.zoom / 470.0f, 0.5f, 1.5f), 0.0f, 1.0f);
+        q_ojo[2] = riel + (S.s_obj[2] - riel) * clampf(fabsf(S.giro) * cerca * 0.8f, 0.0f, 0.6f);
+    }
     mira[0] = S.s_obj[0]; mira[1] = S.s_obj[1]; mira[2] = S.s_obj[2] - lado * A.mira * M;
     {
         float techo = -(MIRA_TECHO_M < 0.5f * A.altura ? MIRA_TECHO_M : 0.5f * A.altura) * M;
@@ -460,7 +472,7 @@ static int calcular(void) {
         const float *usada = va ? g_nuevo : g_juego;
         EstadoGuia *e = &g_guia;
         e->camara_activa = A.activa; e->en_uso = va; e->modo = modo; e->tiro = S.tiro_t > 0.0f ? S.tiro : 0;
-        e->altura = A.altura; e->distancia = A.distancia; e->zoom = A.zoom; e->retraso = A.retraso;
+        e->altura = A.altura; e->distancia = A.distancia; e->zoom = A.zoom; e->retraso = A.retraso; e->giro = A.giro;
         for (i = 0; i < 3; i++) { e->ojo[i] = usada[i] / M; e->mira[i] = usada[3 + i] / M; e->pelota[i] = pel[i] / M; }
         e->t_activar = A.t_activar; e->t_altura_menos = A.t_altura_menos; e->t_altura_mas = A.t_altura_mas;
         e->t_dist_menos = A.t_dist_menos; e->t_dist_mas = A.t_dist_mas; e->t_zoom_abrir = A.t_zoom_abrir;

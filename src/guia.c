@@ -38,8 +38,8 @@ static void texto(HDC dc, int x, int y, COLORREF c, const char *s) {
 /* Una fila: tecla a la izquierda (en acento), descripcion y valor. */
 static void fila(HDC dc, int x, int y, const char *tecla, const char *que, const char *valor, COLORREF cv) {
     texto(dc, x, y, ACENTO, tecla);
-    texto(dc, x + 76, y, LINEA, que);
-    texto(dc, x + 196, y, cv, valor);
+    texto(dc, x + 88, y, LINEA, que);
+    texto(dc, x + 204, y, cv, valor);
 }
 
 /* Esquema de la cancha (vista desde arriba) en el rectangulo r. */
@@ -117,7 +117,7 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     HFONT chica, grande, vieja;
     RECT todo = {0, 0, w, h};
     char s[64], k[32];
-    int x = 286, y = 38, paso = 20, i;
+    int x = 286, y = 36, paso = 19, i;
     HBRUSH fondo;
     memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -150,11 +150,11 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     fila(dc, x, y, k, "Camara VS", e->camara_activa ? "ACTIVA" : "APAGADA", e->camara_activa ? ENCENDIDO : APAGADO);
     y += paso;
     nombre_tecla(e->t_blur, k);
-    fila(dc, x, y, k, "Blur tribunas", !e->blur_ok ? "NO DISPONIBLE" : e->blur_activo ? "SI" : "NO",
+    fila(dc, x, y, k, "Blur tribunas", !e->blur_ok ? "NO DISPONIBLE" : e->blur_activo == 2 ? "PRESET 2" : e->blur_activo ? "PRESET 1" : "NO",
          e->blur_ok && e->blur_activo ? ENCENDIDO : APAGADO);
     y += paso;
     sprintf(s, "Ctrl+%s", k);
-    fila(dc, x, y, s, "Bruma", !e->blur_ok ? "NO DISPONIBLE" : e->bruma_activa ? "SI" : "NO",
+    fila(dc, x, y, s, "Bruma", !e->blur_ok ? "NO DISPONIBLE" : e->bruma_activa == 2 ? "PRESET 2" : e->bruma_activa ? "PRESET 1" : "NO",
          e->blur_ok && e->bruma_activa ? ENCENDIDO : APAGADO);
     y += paso;
     nombre_tecla(e->t_blur, k);
@@ -168,6 +168,8 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     fila(dc, x, y, k, "Distancia", s, LINEA); y += paso;
     par_teclas(e->t_zoom_abrir, e->t_zoom_cerrar, k); sprintf(s, "%.0f", e->zoom);
     fila(dc, x, y, k, "Zoom", s, LINEA); y += paso;
+    par_teclas(e->t_zoom_abrir, e->t_zoom_cerrar, k); sprintf(s, "Sh+%s", k); strcpy(k, s); sprintf(s, "%.2f", e->giro);
+    fila(dc, x, y, k, "Giro arco", s, LINEA); y += paso;
     nombre_tecla(e->t_retraso, k); sprintf(s, "%.2f s", e->retraso);
     fila(dc, x, y, k, "Retraso", s, LINEA); y += paso;
     nombre_tecla(e->t_estandar, k);

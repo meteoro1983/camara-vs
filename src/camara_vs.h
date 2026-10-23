@@ -7,7 +7,7 @@
 
 #include <windows.h>
 
-#define CAMARA_VS_VERSION "1.2.0"
+#define CAMARA_VS_VERSION "1.2.1"
 
 enum { GUIA_JUEGO, GUIA_LATERAL, GUIA_ARQUERO };
 
@@ -17,7 +17,7 @@ typedef struct {
     int camara_activa;        /* F9 */
     int en_uso;               /* la camara VS esta puesta en este momento (no la del juego) */
     int modo, tiro;           /* tiro: 1 = disparo, 2 = centro o pelotazo */
-    float altura, distancia, zoom, retraso;   /* ajustes (m, m, foco, s) */
+    float altura, distancia, zoom, retraso, giro;   /* ajustes (m, m, foco, s, 0..1) */
     float ojo[3], mira[3], pelota[3];        /* en metros: x largo, y vertical (negativo arriba), z ancho */
     int t_activar, t_altura_menos, t_altura_mas, t_dist_menos, t_dist_mas,
         t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar;
