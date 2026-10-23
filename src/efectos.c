@@ -44,7 +44,7 @@ typedef struct { UINT formato, tipo, uso, pool, tam, multisample, ancho, alto; }
 /* IDirect3DDevice8 */
 enum {
     DEV_GetDeviceCaps = 7, DEV_Reset = 14, DEV_GetBackBuffer = 16, DEV_CreateTexture = 20,
-    DEV_CopyRects = 28, DEV_SetRenderTarget = 31, DEV_GetRenderTarget = 32,
+    DEV_CreateRenderTarget = 25, DEV_CopyRects = 28, DEV_SetRenderTarget = 31, DEV_GetRenderTarget = 32,
     DEV_GetDepthStencilSurface = 33, DEV_BeginScene = 34, DEV_EndScene = 35, DEV_Clear = 36,
     DEV_SetTransform = 37, DEV_SetViewport = 40, DEV_SetRenderState = 50, DEV_ApplyStateBlock = 54,
     DEV_CaptureStateBlock = 55, DEV_DeleteStateBlock = 56, DEV_CreateStateBlock = 57,
@@ -74,6 +74,9 @@ typedef HRESULT (WINAPI *UnlockRect_t)(void *, UINT);
 typedef HRESULT (WINAPI *Reset_t)(void *, void *);
 typedef HRESULT (WINAPI *CreateTexture_t)(void *, UINT, UINT, UINT, DWORD, UINT, UINT, void **);
 typedef HRESULT (WINAPI *CopyRects_t)(void *, void *, const RECT *, UINT, void *, const POINT *);
+typedef HRESULT (WINAPI *CreateRenderTarget_t)(void *, UINT, UINT, UINT, UINT, BOOL, void **);
+typedef HRESULT (WINAPI *SupLock_t)(void *, RectBloqueado8 *, const RECT *, DWORD);
+typedef HRESULT (WINAPI *SupUnlock_t)(void *);
 typedef HRESULT (WINAPI *SetRenderTarget_t)(void *, void *, void *);
 typedef HRESULT (WINAPI *GetSurface_t)(void *, void **);
 typedef HRESULT (WINAPI *BeginScene_t)(void *);
@@ -168,6 +171,7 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 #define FVF_XYZ 0x002
 #define FVF_XYZRHW 0x004
 #define FVF_TEX1 0x100
+#define FVF_DIFFUSE 0x040
 #define PT_TRIANGLELIST 4
 #define PT_TRIANGLESTRIP 5
 #define CLEAR_TARGET 1
@@ -186,7 +190,8 @@ static struct {
     int t_activar, t_captura, t_guia, t_bruma, t_color, t_mascara, t_cancha;
     int aniso, cancha;                        /* cancha: bit 0 = franjas de cesped, bit 1 = sombra */
     float nitidez, vineta, sombra_linea, sombra_fuerza, sombra_penumbra, franjas_fuerza;
-    int franjas_n;
+    int franjas_n, luces, cielo;            /* luces: bloom + destellos de noche; cielo: tinte del cielo */
+    float bloom, destellos;
     float fuerza, bruma_fuerza;
     DWORD bruma_color;                        /* 0 = el color de niebla del juego */
     /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
@@ -265,7 +270,11 @@ static void leer_ajustes(void) {
     GetPrivateProfileStringA("efectos", "tecla_cancha", "0x23", s, sizeof s, g_ini);  /* Fin */
     E.t_cancha = (int)strtol(s, NULL, 0);
     E.aniso = GetPrivateProfileIntA("efectos", "anisotropico", 8, g_ini);
-    E.cancha = GetPrivateProfileIntA("efectos", "cancha", 1, g_ini) & 3;
+    E.luces = GetPrivateProfileIntA("efectos", "luces_noche", 1, g_ini);
+    E.cielo = GetPrivateProfileIntA("efectos", "cielo", 1, g_ini);
+    GetPrivateProfileStringA("efectos", "bloom", "0.35", s, sizeof s, g_ini); E.bloom = (float)atof(s);
+    GetPrivateProfileStringA("efectos", "destellos", "0.6", s, sizeof s, g_ini); E.destellos = (float)atof(s);
+    E.cancha = GetPrivateProfileIntA("efectos", "cancha", 7, g_ini) & 7;
     E.franjas_n = GetPrivateProfileIntA("efectos", "franjas", 18, g_ini);
     if (E.franjas_n < 2) E.franjas_n = 2;
     if (E.franjas_n > 40) E.franjas_n = 40;
@@ -324,6 +333,7 @@ static struct {
 static struct {
     void *tex[3], *sup[3];    /* escena a 1/2, 1/4 y 1/8 */
     void *masc, *masc_sup;    /* mascara de pesos a resolucion completa (se pinta con el stencil) */
+    void *lectura;            /* render target bloqueable a 1/8: se lee para dia/noche y reflectores */
     void *mtex[8], *msup[8];  /* la mascara achicada a la mitad hasta ~150 lineas: queda suave */
     int n_masc;
     void *copia, *copia_sup;  /* copia de la escena si el render target no es textura */
@@ -418,6 +428,8 @@ static void *g_vineta;                         /* textura MANAGED de la vineta *
 static float g_vineta_hecha[4] = {-1, -1, -1, -1};
 static DWORD g_max_aniso = 1;
 
+
+
 static void liberar_recursos(void *dev) {
     int i;
     if (g_ps_color && dev) LLAMAR(DeletePixelShader_t, dev, DEV_DeletePixelShader)(dev, g_ps_color);
@@ -427,7 +439,7 @@ static void liberar_recursos(void *dev) {
     G.bloque = 0;
     for (i = 0; i < 3; i++) { soltar(&R.sup[i]); soltar(&R.tex[i]); }
     for (i = 0; i < R.n_masc; i++) { soltar(&R.msup[i]); soltar(&R.mtex[i]); }
-    soltar(&R.masc_sup); soltar(&R.masc); R.n_masc = 0;
+    soltar(&R.masc_sup); soltar(&R.masc); R.n_masc = 0; soltar(&R.lectura);
     soltar(&R.copia_sup); soltar(&R.copia);
     if (R.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, R.bloque);
     R.bloque = 0; R.ancho = R.alto = 0;
@@ -686,6 +698,83 @@ static void camara_de_vista(const float *m, float *c) {
     for (j = 0; j < 3; j++) c[j] = -(m[12] * m[j * 4] + m[13] * m[j * 4 + 1] + m[14] * m[j * 4 + 2]);
 }
 
+/* Dia / noche y reflectores, a partir de la escena a 1/8 leida cada LEER_CADA cuadros. */
+#define LEER_CADA 20
+#define MAX_LUCES 16
+static int g_noche, g_cuadro_lectura;
+static struct { float x, y, f; } g_luces[MAX_LUCES];
+static int g_n_luces;
+static void *g_destello;                       /* textura MANAGED de la estrella */
+
+static void leer_escena(void *dev, UINT w8, UINT h8) {
+    RectBloqueado8 lr;
+    UINT x, y, n = 0;
+    double suma = 0;
+    if (!R.lectura && FAILED(LLAMAR(CreateRenderTarget_t, dev, DEV_CreateRenderTarget)(dev, w8, h8, 21, 0, TRUE, &R.lectura))) {
+        R.lectura = NULL; return;
+    }
+    LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, R.lectura, NULL);
+    LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.tex[2]);
+    TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TEXTURE);
+    TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TEXTURE);
+    RS(RS_ALPHABLENDENABLE, FALSE);
+    quad(dev, w8, h8, 0, 0);
+    if (FAILED(((SupLock_t)VT(R.lectura)[9])(R.lectura, &lr, NULL, 0x10 /* READONLY */))) return;
+    /* brillo medio del tercio de arriba (cielo / tribunas altas): de noche es muy oscuro */
+    for (y = 0; y < h8 / 3; y++) {
+        const BYTE *p = (const BYTE *)lr.bits + y * lr.pitch;
+        for (x = 0; x < w8; x++, p += 4) { suma += 0.299 * p[2] + 0.587 * p[1] + 0.114 * p[0]; n++; }
+    }
+    if (n) {
+        double m = suma / n;
+        int antes = g_noche;
+        if (m < 40) g_noche = 1; else if (m > 55) g_noche = 0;     /* con histeresis */
+        if (g_noche != antes) anotar("efectos: %s (brillo medio arriba %.0f)", g_noche ? "noche" : "dia", m);
+    }
+    /* reflectores: maximos locales muy brillantes */
+    g_n_luces = 0;
+    if (g_noche) {
+        for (y = 2; y + 2 < h8 * 2 / 3 && g_n_luces < MAX_LUCES; y++) {
+            for (x = 2; x + 2 < w8 && g_n_luces < MAX_LUCES; x++) {
+                const BYTE *p = (const BYTE *)lr.bits + y * lr.pitch + 4 * x;
+                int l = (p[0] > p[1] ? (p[0] > p[2] ? p[0] : p[2]) : (p[1] > p[2] ? p[1] : p[2])), dx, dy, maximo = 1;
+                if (l < 235) continue;
+                for (dy = -2; dy <= 2 && maximo; dy++) for (dx = -2; dx <= 2; dx++) {
+                    const BYTE *q = (const BYTE *)lr.bits + (y + dy) * lr.pitch + 4 * (x + dx);
+                    int lq = (q[0] > q[1] ? (q[0] > q[2] ? q[0] : q[2]) : (q[1] > q[2] ? q[1] : q[2]));
+                    if ((dx || dy) && (lq > l || (lq == l && (dy < 0 || (dy == 0 && dx < 0))))) { maximo = 0; break; }
+                }
+                if (maximo) {
+                    g_luces[g_n_luces].x = (x + 0.5f) * 8; g_luces[g_n_luces].y = (y + 0.5f) * 8;
+                    g_luces[g_n_luces].f = (l - 235) / 20.0f; g_n_luces++;
+                }
+            }
+        }
+    }
+    ((SupUnlock_t)VT(R.lectura)[10])(R.lectura);
+}
+
+/* Estrella de los reflectores (estilo arcade): brillo central + 4 rayos largos y 4 cortos. */
+static void *textura_destello(void *dev) {
+    RectBloqueado8 lr; int x, y;
+    if (g_destello) return g_destello;
+    if (FAILED(g_crear_textura(dev, 128, 128, 1, 0, 21, POOL_MANAGED, &g_destello))) { g_destello = NULL; return NULL; }
+    if (FAILED(LLAMAR(LockRect_t, g_destello, TEX_LockRect)(g_destello, 0, &lr, NULL, 0))) return g_destello;
+    for (y = 0; y < 128; y++) for (x = 0; x < 128; x++) {
+        float dx = (x - 63.5f) / 64.0f, dy = (y - 63.5f) / 64.0f, r = sqrtf(dx * dx + dy * dy);
+        float g = expf(-r * 7.0f) * 1.2f;
+        float d1 = fabsf(dx) < fabsf(dy) ? fabsf(dx) : fabsf(dy);                    /* rayos en cruz */
+        float d2 = fabsf(dx - dy) < fabsf(dx + dy) ? fabsf(dx - dy) : fabsf(dx + dy);  /* rayos en diagonal */
+        float v = g + expf(-d1 * 60.0f) * (1 - r) * 0.9f + expf(-d2 * 70.0f) * (1 - r * 1.6f > 0 ? 1 - r * 1.6f : 0) * 0.4f;
+        BYTE b = (BYTE)((v > 1 ? 1 : v) * 255.0f);
+        ((DWORD *)((BYTE *)lr.bits + y * lr.pitch))[x] = 0xFF000000u | b * 0x010101u;
+    }
+    LLAMAR(UnlockRect_t, g_destello, TEX_UnlockRect)(g_destello, 0);
+    return g_destello;
+}
+
+typedef struct { float x, y, z, rhw; DWORD c; } VerticeColor;
+
 static const DWORD COLOR_MASCARA[N_CAJAS + 1] = {
     0xFFFF0000, 0xFFFF8000, 0xFFFFFF00, 0xFF00FF00, 0xFF00FFFF, 0xFF0000FF, 0xFFFF00FF};
 
@@ -738,12 +827,13 @@ static void aplicar_blur(void *dev) {
     }
 
     /* 1. Escena a 1/2, 1/4 y 1/8 (blur; la de 1/2 tambien para la nitidez) */
-    for (i = 0; i < 3 && (E.activo || (i == 0 && E.color && E.nitidez > 0)); i++) {
+    for (i = 0; i < 3; i++) {
         void *src = i ? R.tex[i - 1] : (escena ? escena : R.copia);
         UINT sw = ds.ancho >> i, sh = ds.alto >> i;
         LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, R.sup[i], NULL);
         achicar(dev, src, sw, sh, sw >> 1, sh >> 1);
     }
+    if (++g_cuadro_lectura >= LEER_CADA) { g_cuadro_lectura = 0; leer_escena(dev, ds.ancho >> 3, ds.alto >> 3); }
     LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, rt, z);
 
     /* 2. Mascara: el stencil cuenta en cuantas cajas esta la superficie visible. Por caja, el
@@ -808,7 +898,7 @@ static void aplicar_blur(void *dev) {
     }
     /* 4. Cancha (1.3): sombra del estadio sobre el lado lejano (3 cajas = penumbra suave) y franjas
      * de corte del cesped (cajas finas a ras del piso). Ancladas en metros, sirven en cualquier estadio. */
-    if (!E.ver_mascara && (E.cancha & 2) && E.sombra_fuerza > 0) {
+    if (!E.ver_mascara && (E.cancha & 2) && E.sombra_fuerza > 0 && !g_noche) {   /* de noche no hay sombra */
         float c[3][5], peso[N_CAJAS] = {0};
         int k;
         void *masc;
@@ -841,6 +931,78 @@ static void aplicar_blur(void *dev) {
         RS(RS_TEXTUREFACTOR, a << 24);
         quad(dev, ds.ancho, ds.alto, 0, 0);
         RS(RS_STENCILENABLE, FALSE);
+    }
+
+    /* Perimetro: oscurecido de contacto a ras del piso alrededor de la cancha (base de vallas y
+     * tribunas). Banda entre cajas: adentro de la cancha (3 cajas) nada, afuera mas oscuro. */
+    if (!E.ver_mascara && (E.cancha & 4)) {
+        float c[3][5], peso[N_CAJAS] = {0};
+        int k;
+        void *masc;
+        for (k = 0; k < 3; k++) {
+            float m = 3.0f + (2 - k) * 4.0f;       /* k=0 la mas grande */
+            c[k][0] = -(52.5f + m); c[k][1] = 52.5f + m; c[k][2] = -(34.0f + m); c[k][3] = 34.0f + m; c[k][4] = 2.5f;
+        }
+        peso[N_CAJAS - 1 - 1] = 0.30f; peso[N_CAJAS - 1 - 2] = 0.15f;   /* 1 caja = lo mas afuera */
+        contar_cajas(dev, ds.ancho, ds.alto, 3, (const float (*)[5])c, 0);
+        masc = mascara_suave(dev, z, ds.ancho, ds.alto, peso);
+        LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, rt, z);
+        mezclar(dev, ds.ancho, ds.alto, NULL, 0x00000000, masc);
+    }
+    /* Cielo: degradado suave donde no hay profundidad (mas azul de dia, mas profundo de noche) */
+    if (!E.ver_mascara && E.cielo && E.color) {
+        VerticeColor q[4];
+        DWORD arriba = g_noche ? 0x70040814u : 0x50183A80u, abajo = arriba & 0x00FFFFFF;
+        float x1 = (float)ds.ancho - 0.5f, y1 = (float)ds.alto * 0.7f;
+        LLAMAR(Clear_t, dev, DEV_Clear)(dev, 0, NULL, CLEAR_STENCIL, 0, 1.0f, 0);
+        LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
+        RS(RS_STENCILENABLE, TRUE); RS(RS_COLORWRITEENABLE, 0);
+        RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_LESS);
+        RS(RS_STENCILFUNC, CMP_ALWAYS); RS(RS_STENCILPASS, SOP_REPLACE); RS(RS_STENCILFAIL, SOP_KEEP); RS(RS_STENCILZFAIL, SOP_KEEP);
+        RS(RS_STENCILREF, 1); RS(RS_STENCILWRITEMASK, 0x7F);
+        quad_z(dev, ds.ancho, ds.alto, 0.99999f);
+        RS(RS_ZENABLE, FALSE); RS(RS_COLORWRITEENABLE, 0xF);
+        RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILMASK, 0x7F); RS(RS_STENCILPASS, SOP_KEEP); RS(RS_STENCILWRITEMASK, 0);
+        RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_INVSRCALPHA);
+        LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
+        TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_DIFFUSE);
+        TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_DIFFUSE);
+        q[0] = (VerticeColor){-0.5f, -0.5f, 0, 1, arriba}; q[1] = (VerticeColor){x1, -0.5f, 0, 1, arriba};
+        q[2] = (VerticeColor){-0.5f, y1, 0, 1, abajo};    q[3] = (VerticeColor){x1, y1, 0, 1, abajo};
+        LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_DIFFUSE);
+        LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLESTRIP, 2, q, sizeof(VerticeColor));
+        LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
+        RS(RS_STENCILENABLE, FALSE);
+    }
+    /* Luces de noche: bloom sutil (lo que pasa del umbral en la escena a 1/8, sumado) y destellos
+     * sobre los reflectores detectados. */
+    if (!E.ver_mascara && E.luces && g_noche) {
+        RS(RS_STENCILENABLE, FALSE); RS(RS_ZENABLE, FALSE);
+        RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_ONE);
+        if (E.bloom > 0) {
+            DWORD a = (DWORD)((E.bloom > 1 ? 1 : E.bloom) * 255.0f);
+            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.tex[2]);
+            TSS(0, TSS_COLOROP, 10 /* SUBTRACT */); TSS(0, TSS_COLORARG1, TA_TEXTURE); TSS(0, TSS_COLORARG2, TA_TFACTOR);
+            TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
+            RS(RS_TEXTUREFACTOR, (a << 24) | 0x00A0A0A0);      /* umbral ~63 % */
+            quad(dev, ds.ancho, ds.alto, 0, 0);
+        }
+        if (E.destellos > 0 && g_n_luces && textura_destello(dev)) {
+            int k;
+            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, g_destello);
+            TSS(0, TSS_COLOROP, TOP_MODULATE); TSS(0, TSS_COLORARG1, TA_TEXTURE); TSS(0, TSS_COLORARG2, TA_TFACTOR);
+            TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
+            RS(RS_SRCBLEND, BLEND_ONE); RS(RS_DESTBLEND, BLEND_ONE);
+            for (k = 0; k < g_n_luces; k++) {
+                float f = g_luces[k].f > 1 ? 1 : g_luces[k].f, tam = ds.alto * (0.05f + 0.07f * f);
+                DWORD v = (DWORD)(E.destellos * (0.5f + 0.5f * f) * 255.0f);
+                if (v > 255) v = 255;
+                RS(RS_TEXTUREFACTOR, 0xFF000000u | (v << 16) | ((v * 240 / 255) << 8) | (v * 215 / 255));
+                quad_en(dev, g_luces[k].x * ds.ancho / (8.0f * (ds.ancho >> 3)) - tam * 0.5f,
+                        g_luces[k].y * ds.alto / (8.0f * (ds.alto >> 3)) - tam * 0.5f, tam, tam, 1.0f, 1.0f);
+            }
+        }
+        RS(RS_ALPHABLENDENABLE, FALSE);
     }
 
     /* 5. Pase final: nitidez + color + vineta (pixel shader 1.4), desde una copia de la escena */
@@ -950,7 +1112,7 @@ static void antes_de_dibujar(void *dev) {
         J.rt_mundo = J.rt;
         return;
     }
-    if (J.hecho || !(E.activo || E.bruma || E.color || E.cancha || E.ver_mascara) || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
+    if (J.hecho || !(E.activo || E.bruma || E.color || E.cancha || E.luces || E.ver_mascara) || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
     J.hecho = 1;
     J.en_efecto = 1;
     __try { aplicar_blur(dev); }
@@ -991,8 +1153,8 @@ static HRESULT WINAPI h_BeginScene(void *d) {
                 WritePrivateProfileStringA("efectos", "color", E.color ? "1" : "0", g_ini);
             }
             if (flanco(E.t_cancha, &a_cancha)) {
-                static const int ciclo[4] = {1, 3, 0, 2};   /* nada -> franjas -> franjas+sombra -> sombra */
-                E.cancha = ciclo[E.cancha & 3]; g_guia.tecla_ms = GetTickCount();
+                /* todo -> franjas + perimetro -> nada -> todo */
+                E.cancha = (E.cancha & 7) == 7 ? 5 : (E.cancha & 7) == 0 ? 7 : 0; g_guia.tecla_ms = GetTickCount();
                 WritePrivateProfileStringA("efectos", "cancha", (sprintf(v, "%d", E.cancha), v), g_ini);
             }
             if (flanco(E.t_mascara, &a_mascara)) {
@@ -1001,7 +1163,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
             }
         }
         g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.color_activo = E.color && !g_ps_fallo; g_guia.t_blur = E.t_activar; g_guia.t_bruma = E.t_bruma; g_guia.t_color = E.t_color; g_guia.t_guia = E.t_guia;
-        g_guia.cancha = E.cancha; g_guia.t_cancha = E.t_cancha;
+        g_guia.cancha = E.cancha; g_guia.t_cancha = E.t_cancha; g_guia.noche = g_noche; g_guia.luces = E.luces;
         C.cuadro++;
         if (E.diagnostico && !C.capturando && flanco(E.t_captura, &a_captura)) {
             char ruta[MAX_PATH];

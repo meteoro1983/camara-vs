@@ -168,11 +168,18 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
          e->blur_ok && e->color_activo ? ENCENDIDO : APAGADO);
     y += paso;
     {
-        static const char *nom[4] = {"NO", "FRANJAS", "SOMBRA", "FRANJAS+SOMBRA"};
+        char v[48] = "";
+        int c = e->cancha & 7;
+        if (c == 7) strcpy(v, e->noche ? "TODO (noche)" : "TODO");
+        else if (c == 5) strcpy(v, "SIN SOMBRA");
+        else if (c) sprintf(v, "%s%s%s", c & 1 ? "F" : "", c & 2 ? "S" : "", c & 4 ? "B" : "");
         nombre_tecla(e->t_cancha, s);
-        fila(dc, x, y, s, "Cancha", !e->blur_ok ? "NO DISPONIBLE" : nom[e->cancha & 3],
+        fila(dc, x, y, s, "Cancha", !e->blur_ok ? "NO DISPONIBLE" : v[0] ? v : "NO",
              e->blur_ok && e->cancha ? ENCENDIDO : APAGADO);
     }
+    y += paso;
+    fila(dc, x, y, "auto", "Dia / noche", !e->blur_ok ? "-" : e->noche ? (e->luces ? "NOCHE + LUCES" : "NOCHE") : "DIA",
+         e->blur_ok && e->noche && e->luces ? ENCENDIDO : LINEA);
     y += paso + 4;
     par_teclas(e->t_altura_menos, e->t_altura_mas, k); sprintf(s, "%.0f m", e->altura);
     fila(dc, x, y, k, "Altura", s, LINEA); y += paso;
