@@ -33,7 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VERSION "1.1.0"
+#define VERSION "1.2.0-dev"
 #define M 256.0f
 
 /* ---------------------------------------------------------------- firmas */
@@ -110,9 +110,11 @@ static DWORD leer_dato(const Firma *f, int *ok) {
 
 /* ---------------------------------------------------------------- registro y ajustes */
 
-static char g_ini[MAX_PATH], g_log[MAX_PATH];
+char g_log[MAX_PATH];
+static char g_ini[MAX_PATH];
+int efectos_iniciar(const char *ini);
 
-static void anotar(const char *fmt, ...) {
+void anotar(const char *fmt, ...) {
     FILE *f = fopen(g_log, "a");
     va_list ap;
     if (!f) return;
@@ -521,6 +523,7 @@ static DWORD WINAPI iniciar(LPVOID nada) {
     }
     S.dueno_ant = -1; S.modo_ant = JUEGO;
     if (!enganchar()) { anotar("no se pudo enganchar la funcion de vista"); return 0; }
+    efectos_iniciar(g_ini);
     anotar("listo. %s = activar/desactivar (ahora %s)", "F9", A.activa ? "activa" : "apagada");
     return 0;
 }
