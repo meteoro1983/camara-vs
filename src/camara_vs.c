@@ -523,8 +523,15 @@ static DWORD WINAPI iniciar(LPVOID nada) {
     }
     S.dueno_ant = -1; S.modo_ant = JUEGO;
     if (!enganchar()) { anotar("no se pudo enganchar la funcion de vista"); return 0; }
-    efectos_iniciar(g_ini);
     anotar("listo. %s = activar/desactivar (ahora %s)", "F9", A.activa ? "activa" : "apagada");
+    return 0;
+}
+
+/* Los efectos (blur) van en su propio hilo: no dependen de que la camara este activa ni de que se
+ * hayan encontrado sus firmas. */
+static DWORD WINAPI iniciar_efectos(LPVOID nada) {
+    (void)nada;
+    efectos_iniciar(g_ini);
     return 0;
 }
 
@@ -539,6 +546,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD motivo, LPVOID reservado) {
         DeleteFileA(g_log);
         leer_ajustes();
         CloseHandle(CreateThread(NULL, 0, iniciar, NULL, 0, NULL));
+        CloseHandle(CreateThread(NULL, 0, iniciar_efectos, NULL, 0, NULL));
     } else if (motivo == DLL_PROCESS_DETACH && reservado == NULL) {
         desenganchar();
     }
