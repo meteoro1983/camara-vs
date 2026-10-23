@@ -22,7 +22,7 @@ typedef struct {
     int t_activar, t_altura_menos, t_altura_mas, t_dist_menos, t_dist_mas,
         t_zoom_abrir, t_zoom_cerrar, t_retraso, t_estandar;
     /* efectos */
-    int blur_ok, blur_activo, t_blur, t_guia;
+    int blur_ok, blur_activo, bruma_activa, t_blur, t_guia;
     /* GetTickCount de la ultima tecla: la guia se muestra unos segundos */
     DWORD tecla_ms;
 } EstadoGuia;

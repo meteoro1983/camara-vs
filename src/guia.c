@@ -117,7 +117,7 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     HFONT chica, grande, vieja;
     RECT todo = {0, 0, w, h};
     char s[64], k[32];
-    int x = 286, y = 44, paso = 24, i;
+    int x = 286, y = 40, paso = 22, i;
     HBRUSH fondo;
     memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -152,6 +152,10 @@ void guia_pintar(DWORD *px, int w, int h, const EstadoGuia *e) {
     nombre_tecla(e->t_blur, k);
     fila(dc, x, y, k, "Blur tribunas", !e->blur_ok ? "NO DISPONIBLE" : e->blur_activo ? "SI" : "NO",
          e->blur_ok && e->blur_activo ? ENCENDIDO : APAGADO);
+    y += paso;
+    sprintf(s, "Ctrl+%s", k);
+    fila(dc, x, y, s, "Bruma", !e->blur_ok ? "NO DISPONIBLE" : e->bruma_activa ? "SI" : "NO",
+         e->blur_ok && e->bruma_activa ? ENCENDIDO : APAGADO);
     y += paso + 6;
     par_teclas(e->t_altura_menos, e->t_altura_mas, k); sprintf(s, "%.0f m", e->altura);
     fila(dc, x, y, k, "Altura", s, LINEA); y += paso;

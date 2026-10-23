@@ -106,6 +106,7 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 #define RS_ZFUNC 23
 #define RS_ALPHABLENDENABLE 27
 #define RS_FOGENABLE 28
+#define RS_FOGCOLOR 34
 #define RS_STENCILENABLE 52
 #define RS_STENCILFAIL 53
 #define RS_STENCILZFAIL 54
@@ -172,19 +173,25 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 
 #define N_CAJAS 6
 static struct {
-    int activo, ver_mascara, diagnostico, guia_fija;
+    int activo, bruma, ver_mascara, diagnostico, guia_fija;
     int t_activar, t_captura, t_guia;
-    float fuerza;
-    float costado[N_CAJAS], fondo[N_CAJAS];   /* medio ancho y medio largo de cada caja, en m */
-    float alfa[N_CAJAS];                      /* mezcla por anillo, de adentro hacia afuera */
+    float fuerza, bruma_fuerza;
+    DWORD bruma_color;                        /* 0 = el color de niebla del juego */
+    /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
+    float lejos[N_CAJAS], cerca[N_CAJAS], fondo[N_CAJAS];
+    float alfa[N_CAJAS], bruma_alfa[N_CAJAS]; /* mezcla por anillo, de adentro hacia afuera */
 } E;
 static char g_ini[MAX_PATH];
 
-/* Anillos por defecto: en los costados el blur arranca tenue 5 m antes de la linea; en los
- * fondos recien detras de la red (la linea esta a 52,5 m y la red tiene ~2 m de fondo). */
-static const float COSTADO[N_CAJAS] = {29.0f, 33.0f, 37.0f, 42.0f, 48.0f, 55.0f};
-static const float FONDO[N_CAJAS]   = {55.0f, 58.0f, 62.0f, 67.0f, 73.0f, 80.0f};
-static const float ALFA[N_CAJAS]    = {0.15f, 0.30f, 0.45f, 0.60f, 0.80f, 1.00f};
+/* Anillos por defecto (lineas: laterales a 34 m, de gol a 52,5 m). Del lado lejano el blur
+ * arranca tenue 7 m adentro de la cancha; del lado de la camara recien en la linea, para no
+ * desenfocar a los jugadores cercanos; en los fondos desde la linea de gol (la red apenas). */
+static const float LEJOS[N_CAJAS]  = {27.0f, 30.0f, 34.0f, 39.0f, 45.0f, 52.0f};
+static const float CERCA[N_CAJAS]  = {34.0f, 38.0f, 42.0f, 47.0f, 53.0f, 60.0f};
+static const float FONDO[N_CAJAS]  = {52.5f, 56.0f, 60.0f, 65.0f, 71.0f, 78.0f};
+static const float ALFA[N_CAJAS]   = {0.15f, 0.30f, 0.45f, 0.60f, 0.80f, 1.00f};
+/* Bruma: solo los anillos de afuera (tribunas altas), muy suave. */
+static const float BRUMA[N_CAJAS]  = {0.0f, 0.0f, 0.05f, 0.10f, 0.16f, 0.24f};
 #define ALTO_CAJA_M 80.0f
 
 static void leer_lista(const char *clave, float *v, const float *def) {
@@ -194,18 +201,25 @@ static void leer_lista(const char *clave, float *v, const float *def) {
     GetPrivateProfileStringA("efectos", clave, d, s, sizeof s, g_ini);
     p = s;
     for (i = 0; i < N_CAJAS; i++) {
-        v[i] = (float)strtod(p, &p);
-        if (v[i] <= 0.0f) v[i] = def[i];
+        char *fin;
+        v[i] = (float)strtod(p, &fin);
+        if (fin == p || v[i] < 0.0f) v[i] = def[i];
+        p = fin;
     }
 }
 
 static void leer_ajustes(void) {
     char s[64];
     E.activo = GetPrivateProfileIntA("efectos", "blur", 1, g_ini);
+    E.bruma = GetPrivateProfileIntA("efectos", "bruma", 1, g_ini);
     E.ver_mascara = GetPrivateProfileIntA("efectos", "ver_mascara", 0, g_ini);
     E.diagnostico = GetPrivateProfileIntA("efectos", "diagnostico", 0, g_ini);
     GetPrivateProfileStringA("efectos", "fuerza", "1", s, sizeof s, g_ini);
     E.fuerza = (float)atof(s);
+    GetPrivateProfileStringA("efectos", "bruma_fuerza", "1", s, sizeof s, g_ini);
+    E.bruma_fuerza = (float)atof(s);
+    GetPrivateProfileStringA("efectos", "bruma_color", "auto", s, sizeof s, g_ini);
+    E.bruma_color = strncmp(s, "auto", 4) == 0 ? 0 : (DWORD)strtoul(s, NULL, 16) & 0x00FFFFFF;
     GetPrivateProfileStringA("efectos", "activar", "0x71", s, sizeof s, g_ini);
     E.t_activar = (int)strtol(s, NULL, 0);
     GetPrivateProfileStringA("efectos", "captura", "0x7B", s, sizeof s, g_ini);
@@ -213,9 +227,11 @@ static void leer_ajustes(void) {
     GetPrivateProfileStringA("efectos", "guia", "0x70", s, sizeof s, g_ini);
     E.t_guia = (int)strtol(s, NULL, 0);
     E.guia_fija = GetPrivateProfileIntA("efectos", "guia_fija", 0, g_ini);
-    leer_lista("costados", E.costado, COSTADO);
+    leer_lista("lado_lejano", E.lejos, LEJOS);
+    leer_lista("lado_camara", E.cerca, CERCA);
     leer_lista("fondos", E.fondo, FONDO);
     leer_lista("mezcla", E.alfa, ALFA);
+    leer_lista("bruma_mezcla", E.bruma_alfa, BRUMA);
 }
 
 /* ---------------------------------------------------------------- estado */
@@ -237,6 +253,7 @@ static struct {
     int vista_ok, proy_ok;
     float vista[16], proy[16];
     DWORD z, zw, ab, at, fog, luz, ps;
+    DWORD niebla;             /* ultimo color de niebla que puso el juego (0 = ninguno) */
     void *tex0;
     UINT stride;
 } J;
@@ -381,9 +398,9 @@ static void achicar(void *dev, void *src, UINT sw, UINT sh, UINT w, UINT h) {
     quad(dev, w, h, -du, dv);  quad(dev, w, h, du, dv);
 }
 
-/* Caja sobre la cancha: medio largo fx, medio ancho fz (en m); de 1 m bajo el piso hasta
+/* Caja sobre la cancha: medio largo fx, a lo ancho de z0 a z1 (en m); de 1 m bajo el piso hasta
  * ALTO_CAJA_M. Triangulos sueltos: se dibuja sin culling, el sentido no importa. */
-static void caja(void *dev, float fx, float fz) {
+static void caja(void *dev, float fx, float z0, float z1) {
     static const BYTE caras[36] = {
         0,1,2, 1,3,2,  4,6,5, 5,6,7,  0,4,1, 1,4,5,  2,3,6, 3,7,6,  0,2,4, 2,6,4,  1,5,3, 3,5,7};
     float v[8][3], t[36][3];
@@ -391,7 +408,7 @@ static void caja(void *dev, float fx, float fz) {
     for (i = 0; i < 8; i++) {
         v[i][0] = (i & 1 ? fx : -fx) * M;
         v[i][1] = (i & 4 ? -ALTO_CAJA_M : 1.0f) * M;
-        v[i][2] = (i & 2 ? fz : -fz) * M;
+        v[i][2] = (i & 2 ? z1 : z0) * M;
     }
     for (i = 0; i < 36; i++) memcpy(t[i], v[caras[i]], sizeof t[i]);
     LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLELIST, 12, t, 12);
@@ -411,7 +428,7 @@ static void aplicar_blur(void *dev) {
     DescSuperficie8 ds;
     float cam[3];
     static const float identidad[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    int i, n;
+    int i, n, lado;
 
     if (FAILED(LLAMAR(GetSurface_t, dev, DEV_GetRenderTarget)(dev, &rt)) || !rt) return;
     LLAMAR(GetSurface_t, dev, DEV_GetDepthStencilSurface)(dev, &z);
@@ -432,8 +449,8 @@ static void aplicar_blur(void *dev) {
     LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
     RS(RS_ZENABLE, FALSE); RS(RS_STENCILENABLE, FALSE);
 
-    /* 1. Escena a 1/2, 1/4 y 1/8 */
-    for (i = 0; i < 3; i++) {
+    /* 1. Escena a 1/2, 1/4 y 1/8 (solo si hay blur) */
+    for (i = 0; i < 3 && E.activo; i++) {
         void *src = i ? R.tex[i - 1] : (escena ? escena : R.copia);
         UINT sw = ds.ancho >> i, sh = ds.alto >> i;
         LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, R.sup[i], NULL);
@@ -462,15 +479,17 @@ static void aplicar_blur(void *dev) {
     cap("blur: proy [%g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g]", J.proy[0], J.proy[1], J.proy[2], J.proy[3],
         J.proy[4], J.proy[5], J.proy[6], J.proy[7], J.proy[8], J.proy[9], J.proy[10], J.proy[11],
         J.proy[12], J.proy[13], J.proy[14], J.proy[15]);
+    lado = cam[2] >= 0.0f ? 1 : -1;           /* lado de la cancha donde esta la camara */
     for (i = 0; i < N_CAJAS; i++) {
-        float fx = E.fondo[i], fz = E.costado[i];
-        int adentro = cam[0] > -fx * M && cam[0] < fx * M && cam[2] > -fz * M && cam[2] < fz * M &&
+        float fx = E.fondo[i];
+        float z0 = lado > 0 ? -E.lejos[i] : -E.cerca[i], z1 = lado > 0 ? E.cerca[i] : E.lejos[i];
+        int adentro = cam[0] > -fx * M && cam[0] < fx * M && cam[2] > z0 * M && cam[2] < z1 * M &&
                       cam[1] < 1.0f * M && cam[1] > -ALTO_CAJA_M * M;
         /* caras delante de la superficie: invertir el bit 7 */
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZ);
         RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_LESSEQUAL);
         RS(RS_STENCILFUNC, CMP_ALWAYS); RS(RS_STENCILPASS, SOP_INVERT); RS(RS_STENCILWRITEMASK, 0x80);
-        caja(dev, fx, fz);
+        caja(dev, fx, z0, z1);
         /* sumar 1 al contador (bits 0-6) donde la superficie quedo adentro */
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
         RS(RS_ZENABLE, FALSE);
@@ -486,7 +505,7 @@ static void aplicar_blur(void *dev) {
     RS(RS_COLORWRITEENABLE, 0xF);
     RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILMASK, 0x7F); RS(RS_STENCILPASS, SOP_KEEP); RS(RS_STENCILWRITEMASK, 0);
     RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_INVSRCALPHA);
-    for (n = 0; n < N_CAJAS; n++) {
+    for (n = 0; n < N_CAJAS && (E.activo || E.ver_mascara); n++) {
         int anillo = N_CAJAS - 1 - n;              /* 0 = el de adentro */
         float a = E.alfa[anillo] * E.fuerza;
         DWORD fa = (DWORD)((a < 0 ? 0 : a > 1 ? 1 : a) * 255.0f + 0.5f);
@@ -503,6 +522,21 @@ static void aplicar_blur(void *dev) {
             TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
             RS(RS_TEXTUREFACTOR, fa << 24);
         }
+        quad(dev, ds.ancho, ds.alto, 0, 0);
+    }
+    /* 4. Bruma: color de aire sobre los anillos de afuera; toma el color de niebla del juego
+     * (cambia con el estadio y la hora) si lo puso. */
+    for (n = 0; n < N_CAJAS && E.bruma && !E.ver_mascara; n++) {
+        int anillo = N_CAJAS - 1 - n;
+        float a = E.bruma_alfa[anillo] * E.bruma_fuerza;
+        DWORD fa = (DWORD)((a < 0 ? 0 : a > 1 ? 1 : a) * 255.0f + 0.5f);
+        DWORD color = E.bruma_color ? E.bruma_color : J.niebla ? J.niebla & 0x00FFFFFF : 0x00B4C3D2;
+        if (!fa) continue;
+        RS(RS_STENCILREF, n);
+        LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
+        TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TFACTOR);
+        TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
+        RS(RS_TEXTUREFACTOR, (fa << 24) | color);
         quad(dev, ds.ancho, ds.alto, 0, 0);
     }
     if (E.ver_mascara) {   /* lo que queda nitido, en violeta */
@@ -567,7 +601,7 @@ static void antes_de_dibujar(void *dev) {
         J.rt_mundo = J.rt;
         return;
     }
-    if (J.hecho || !E.activo || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
+    if (J.hecho || !(E.activo || E.bruma || E.ver_mascara) || R.fallo || J.mundo < 50 || J.rt != J.rt_mundo || !J.vista_ok || !J.proy_ok) return;
     J.hecho = 1;
     J.en_efecto = 1;
     __try { aplicar_blur(dev); }
@@ -594,7 +628,10 @@ static HRESULT WINAPI h_BeginScene(void *d) {
         }
         if (juego_en_foco() && flanco(E.t_activar, &a_activar)) {
             g_guia.tecla_ms = GetTickCount();
-            if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) {
+                E.bruma = !E.bruma;
+                WritePrivateProfileStringA("efectos", "bruma", E.bruma ? "1" : "0", g_ini);
+            } else if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
                 E.ver_mascara = !E.ver_mascara;
                 WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
             } else {
@@ -602,7 +639,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
                 WritePrivateProfileStringA("efectos", "blur", E.activo ? "1" : "0", g_ini);
             }
         }
-        g_guia.blur_activo = E.activo; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
+        g_guia.blur_activo = E.activo; g_guia.bruma_activa = E.bruma; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
         C.cuadro++;
         if (E.diagnostico && !C.capturando && flanco(E.t_captura, &a_captura)) {
             char ruta[MAX_PATH];
@@ -672,6 +709,7 @@ static HRESULT WINAPI h_SetRenderState(void *d, DWORD rs, DWORD v) {
     case RS_ALPHABLENDENABLE: J.ab = v; break;
     case RS_ALPHATESTENABLE: J.at = v; break;
     case RS_FOGENABLE: J.fog = v; break;
+    case RS_FOGCOLOR: J.niebla = v; break;
     case RS_LIGHTING: J.luz = v; break;
     }
     return ((SetRenderState_t)g_orig[DEV_SetRenderState])(d, rs, v);
