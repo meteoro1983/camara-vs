@@ -185,18 +185,22 @@ static struct {
     /* medio ancho de cada caja del lado lejano y del lado de la camara, y medio largo, en m */
     float lejos[N_CAJAS], cerca[N_CAJAS], fondo[N_CAJAS];
     float alfa[N_CAJAS], bruma_alfa[N_CAJAS]; /* mezcla por anillo, de adentro hacia afuera */
+    float nivel[N_CAJAS];                     /* blur por anillo: 1 = escena a 1/2, 2 = 1/4, 3 = 1/8 */
 } E;
 static char g_ini[MAX_PATH];
 
 /* Anillos por defecto (lineas: laterales a 34 m, de gol a 52,5 m). Del lado lejano el blur
- * arranca tenue 7 m adentro de la cancha; del lado de la camara recien en la linea, para no
- * desenfocar a los jugadores cercanos; en los fondos desde la linea de gol (la red apenas). */
-static const float LEJOS[N_CAJAS]  = {27.0f, 30.0f, 34.0f, 39.0f, 45.0f, 52.0f};
-static const float CERCA[N_CAJAS]  = {34.0f, 38.0f, 42.0f, 47.0f, 53.0f, 60.0f};
+ * arranca tenue 11 m adentro de la cancha; del lado de la camara 2,5 m adentro; en los fondos
+ * 1 m antes de la linea de gol (la red apenas). */
+static const float LEJOS[N_CAJAS]  = {23.0f, 27.0f, 31.0f, 37.0f, 44.0f, 52.0f};
+static const float CERCA[N_CAJAS]  = {31.5f, 35.0f, 40.0f, 46.0f, 53.0f, 60.0f};
 /* Detras de los arcos los anillos se abren mas: con la camara a la espalda del arquero la
  * tribuna de enfrente (60-80 m) queda con blur medio y no con el mas espeso. */
-static const float FONDO[N_CAJAS]  = {52.5f, 57.0f, 64.0f, 76.0f, 92.0f, 115.0f};
-static const float ALFA[N_CAJAS]   = {0.15f, 0.30f, 0.45f, 0.60f, 0.80f, 1.00f};
+static const float FONDO[N_CAJAS]  = {51.5f, 57.0f, 64.0f, 76.0f, 92.0f, 115.0f};
+/* La escena puede ser mucho mas grande que la pantalla (4K en WE9LE) y el blur a 1/2 casi no se
+ * ve: adentro de la cancha va a 1/4 con poca mezcla; las tribunas a 1/4 y las de afuera a 1/8. */
+static const float ALFA[N_CAJAS]   = {0.30f, 0.40f, 0.45f, 0.60f, 0.80f, 1.00f};
+static const float NIVEL[N_CAJAS]  = {2.0f, 2.0f, 2.0f, 2.0f, 3.0f, 3.0f};
 /* Bruma: solo los anillos de afuera (tribunas altas), muy suave. */
 static const float BRUMA[N_CAJAS]  = {0.0f, 0.0f, 0.05f, 0.10f, 0.16f, 0.24f};
 #define ALTO_CAJA_M 80.0f
@@ -222,7 +226,7 @@ static void leer_ajustes(void) {
     E.color = GetPrivateProfileIntA("efectos", "color", 1, g_ini);
     GetPrivateProfileStringA("efectos", "color_saturacion", "1.12", s, sizeof s, g_ini);
     E.saturacion = (float)atof(s);
-    GetPrivateProfileStringA("efectos", "color_contraste", "1.08", s, sizeof s, g_ini);
+    GetPrivateProfileStringA("efectos", "color_contraste", "1.15", s, sizeof s, g_ini);
     E.contraste = (float)atof(s);
     GetPrivateProfileStringA("efectos", "color_rgb", "1 1 1", s, sizeof s, g_ini);
     if (sscanf(s, "%f %f %f", &E.rgb[0], &E.rgb[1], &E.rgb[2]) != 3) E.rgb[0] = E.rgb[1] = E.rgb[2] = 1.0f;
@@ -245,6 +249,7 @@ static void leer_ajustes(void) {
     leer_lista("lado_camara", E.cerca, CERCA);
     leer_lista("fondos", E.fondo, FONDO);
     leer_lista("mezcla", E.alfa, ALFA);
+    leer_lista("nivel", E.nivel, NIVEL);
     leer_lista("bruma_mezcla", E.bruma_alfa, BRUMA);
 }
 
@@ -579,8 +584,10 @@ static void aplicar_blur(void *dev) {
             TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
             RS(RS_TEXTUREFACTOR, (COLOR_MASCARA[anillo] & 0x00FFFFFF) | 0x80000000);
         } else {
-            /* anillos de adentro: 1/2 (blur suave); los de afuera: 1/8 (blur fuerte) */
-            LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.tex[anillo < 2 ? 0 : anillo < 4 ? 1 : 2]);
+            {
+                int nv = (int)(E.nivel[anillo] + 0.5f);
+                LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, R.tex[nv < 1 ? 0 : nv > 3 ? 2 : nv - 1]);
+            }
             TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TEXTURE);
             TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TFACTOR);
             RS(RS_TEXTUREFACTOR, fa << 24);
