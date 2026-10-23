@@ -151,11 +151,13 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 #define BLEND_ONE 2
 #define BLEND_SRCALPHA 5
 #define BLEND_INVSRCALPHA 6
+#define CMP_LESS 2
 #define CMP_EQUAL 3
-#define CMP_LESSEQUAL 4
+#define CMP_GREATER 5
 #define CMP_ALWAYS 8
 #define SOP_KEEP 1
 #define SOP_ZERO 2
+#define SOP_REPLACE 3
 #define SOP_INVERT 6
 #define SOP_INCR 7
 #define CULL_NONE 1
@@ -424,6 +426,17 @@ static void quad(void *dev, UINT w, UINT h, float du, float dv) {
     LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLESTRIP, 2, q, sizeof(VerticeQuad));
 }
 
+/* Rectangulo de pantalla completa a la profundidad z (0 = cerca, 1 = lejos). */
+static void quad_z(void *dev, UINT w, UINT h, float z) {
+    VerticeQuad q[4];
+    float x0 = -0.5f, y0 = -0.5f, x1 = (float)w - 0.5f, y1 = (float)h - 0.5f;
+    q[0] = (VerticeQuad){x0, y0, z, 1, 0, 0};
+    q[1] = (VerticeQuad){x1, y0, z, 1, 1, 0};
+    q[2] = (VerticeQuad){x0, y1, z, 1, 0, 1};
+    q[3] = (VerticeQuad){x1, y1, z, 1, 1, 1};
+    LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLESTRIP, 2, q, sizeof(VerticeQuad));
+}
+
 /* Rectangulo (x, y, w, h) de pantalla con la textura de (0,0) a (u1,v1). */
 static void quad_en(void *dev, float x, float y, float w, float h, float u1, float v1) {
     VerticeQuad q[4];
@@ -607,8 +620,9 @@ static void aplicar_blur(void *dev) {
     LLAMAR(SetRenderTarget_t, dev, DEV_SetRenderTarget)(dev, rt, z);
 
     /* 2. Mascara: el stencil cuenta en cuantas cajas esta la superficie visible. Por caja, el
-     * bit 7 cambia con cada cara que queda delante de la superficie: con la camara afuera, impar
-     * = adentro; con la camara adentro, par = adentro. */
+     * bit 7 cambia con cada cara que queda DETRAS de la superficie: si el punto esta adentro de la
+     * caja hay exactamente una (la de salida del rayo), este donde este la camara; afuera, 0 o 2.
+     * No depende de saber si la camara esta adentro de la caja. */
     LLAMAR(Clear_t, dev, DEV_Clear)(dev, 0, NULL, CLEAR_STENCIL, 0, 1.0f, 0);
     LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, NULL);
     TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_DIFFUSE);
@@ -631,23 +645,27 @@ static void aplicar_blur(void *dev) {
     for (i = 0; i < N_CAJAS; i++) {
         float fx = E.fondo[i];
         float z0 = lado > 0 ? -E.lejos[i] : -E.cerca[i], z1 = lado > 0 ? E.cerca[i] : E.lejos[i];
-        int adentro = cam[0] > -fx * M && cam[0] < fx * M && cam[2] > z0 * M && cam[2] < z1 * M &&
-                      cam[1] < 1.0f * M && cam[1] > -ALTO_CAJA_M * M;
-        /* caras delante de la superficie: invertir el bit 7 */
+        /* caras detras de la superficie: invertir el bit 7 */
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZ);
-        RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_LESSEQUAL);
+        RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_GREATER);
         RS(RS_STENCILFUNC, CMP_ALWAYS); RS(RS_STENCILPASS, SOP_INVERT); RS(RS_STENCILWRITEMASK, 0x80);
         caja(dev, fx, z0, z1);
         /* sumar 1 al contador (bits 0-6) donde la superficie quedo adentro */
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
         RS(RS_ZENABLE, FALSE);
-        RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILREF, adentro ? 0x00 : 0x80); RS(RS_STENCILMASK, 0x80);
+        RS(RS_STENCILFUNC, CMP_EQUAL); RS(RS_STENCILREF, 0x80); RS(RS_STENCILMASK, 0x80);
         RS(RS_STENCILPASS, SOP_INCR); RS(RS_STENCILWRITEMASK, 0x7F);
         quad(dev, ds.ancho, ds.alto, 0, 0);
         /* limpiar el bit 7 */
         RS(RS_STENCILFUNC, CMP_ALWAYS); RS(RS_STENCILPASS, SOP_ZERO); RS(RS_STENCILWRITEMASK, 0x80);
         quad(dev, ds.ancho, ds.alto, 0, 0);
     }
+    /* Donde el juego no escribio profundidad (cielo, o suelo que algunos estadios dibujan sin Z)
+     * no hay superficie contra la cual contar: queda nitido. */
+    RS(RS_ZENABLE, TRUE); RS(RS_ZFUNC, CMP_LESS);
+    RS(RS_STENCILFUNC, CMP_ALWAYS); RS(RS_STENCILPASS, SOP_REPLACE); RS(RS_STENCILREF, N_CAJAS); RS(RS_STENCILWRITEMASK, 0x7F);
+    quad_z(dev, ds.ancho, ds.alto, 0.99999f);
+    RS(RS_ZENABLE, FALSE);
 
     /* 3. Mezcla. Contador n = cajas que contienen la superficie (N_CAJAS = nitido). Por cada ancho
      * de blur y para la bruma, los pesos por anillo pasan por una mascara suave. */
