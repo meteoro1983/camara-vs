@@ -30,7 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-void anotar(const char *fmt, ...);
+#include "camara_vs.h"
+
 extern char g_log[MAX_PATH];
 
 #define M 51.2f   /* unidades de dibujo por metro */
@@ -53,7 +54,8 @@ enum {
     DEV_N = 97
 };
 /* IDirect3DSurface8 / IDirect3DTexture8 */
-enum { OBJ_Release = 2, SUP_GetContainer = 7, SUP_GetDesc = 8, TEX_GetSurfaceLevel = 15 };
+enum { OBJ_Release = 2, SUP_GetContainer = 7, SUP_GetDesc = 8, TEX_GetSurfaceLevel = 15, TEX_LockRect = 16,
+       TEX_UnlockRect = 17 };
 
 #define VT(obj) (*(void ***)(obj))
 #define LLAMAR(tipo, obj, idx) ((tipo)VT(obj)[idx])
@@ -64,6 +66,9 @@ typedef HRESULT (WINAPI *GetBackBuffer_t)(void *, UINT, UINT, void **);
 typedef HRESULT (WINAPI *GetDesc_t)(void *, DescSuperficie8 *);
 typedef HRESULT (WINAPI *GetContainer_t)(void *, const GUID *, void **);
 typedef HRESULT (WINAPI *GetSurfaceLevel_t)(void *, UINT, void **);
+typedef struct { INT pitch; void *bits; } RectBloqueado8;
+typedef HRESULT (WINAPI *LockRect_t)(void *, UINT, RectBloqueado8 *, const RECT *, DWORD);
+typedef HRESULT (WINAPI *UnlockRect_t)(void *, UINT);
 typedef HRESULT (WINAPI *Reset_t)(void *, void *);
 typedef HRESULT (WINAPI *CreateTexture_t)(void *, UINT, UINT, UINT, DWORD, UINT, UINT, void **);
 typedef HRESULT (WINAPI *CopyRects_t)(void *, void *, const RECT *, UINT, void *, const POINT *);
@@ -160,14 +165,15 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 #define CLEAR_STENCIL 4
 #define USAGE_RENDERTARGET 1
 #define POOL_DEFAULT 0
+#define POOL_MANAGED 1
 #define SBT_ALL 1
 
 /* ---------------------------------------------------------------- ajustes */
 
 #define N_CAJAS 6
 static struct {
-    int activo, ver_mascara, diagnostico;
-    int t_activar, t_captura;
+    int activo, ver_mascara, diagnostico, guia_fija;
+    int t_activar, t_captura, t_guia;
     float fuerza;
     float costado[N_CAJAS], fondo[N_CAJAS];   /* medio ancho y medio largo de cada caja, en m */
     float alfa[N_CAJAS];                      /* mezcla por anillo, de adentro hacia afuera */
@@ -204,6 +210,9 @@ static void leer_ajustes(void) {
     E.t_activar = (int)strtol(s, NULL, 0);
     GetPrivateProfileStringA("efectos", "captura", "0x7B", s, sizeof s, g_ini);
     E.t_captura = (int)strtol(s, NULL, 0);
+    GetPrivateProfileStringA("efectos", "guia", "0x70", s, sizeof s, g_ini);
+    E.t_guia = (int)strtol(s, NULL, 0);
+    E.guia_fija = GetPrivateProfileIntA("efectos", "guia_fija", 0, g_ini);
     leer_lista("costados", E.costado, COSTADO);
     leer_lista("fondos", E.fondo, FONDO);
     leer_lista("mezcla", E.alfa, ALFA);
@@ -241,6 +250,12 @@ static struct {
     int fallo;
 } R;
 
+/* Guia en pantalla: textura MANAGED (sobrevive a los Reset) con el panel pintado por guia.c */
+#define GUIA_W 600
+#define GUIA_H 256
+#define GUIA_S 4000                 /* ms que se muestra despues de tocar una tecla */
+static struct { void *tex; DWORD bloque, pintado_ms; DWORD px[GUIA_W * GUIA_H]; } G;
+
 /* Diagnostico */
 static struct { int capturando, cuadro, dibujos; FILE *f; } C;
 
@@ -274,6 +289,8 @@ static void soltar(void **p) {
 
 static void liberar_recursos(void *dev) {
     int i;
+    if (G.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, G.bloque);
+    G.bloque = 0;
     for (i = 0; i < 3; i++) { soltar(&R.sup[i]); soltar(&R.tex[i]); }
     soltar(&R.copia_sup); soltar(&R.copia);
     if (R.bloque && dev) LLAMAR(StateBlock_t, dev, DEV_DeleteStateBlock)(dev, R.bloque);
@@ -320,6 +337,17 @@ static void quad(void *dev, UINT w, UINT h, float du, float dv) {
     q[1] = (VerticeQuad){x1, y0, 0, 1, 1 + du, 0 + dv};
     q[2] = (VerticeQuad){x0, y1, 0, 1, 0 + du, 1 + dv};
     q[3] = (VerticeQuad){x1, y1, 0, 1, 1 + du, 1 + dv};
+    LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLESTRIP, 2, q, sizeof(VerticeQuad));
+}
+
+/* Rectangulo (x, y, w, h) de pantalla con la textura de (0,0) a (u1,v1). */
+static void quad_en(void *dev, float x, float y, float w, float h, float u1, float v1) {
+    VerticeQuad q[4];
+    x -= 0.5f; y -= 0.5f;
+    q[0] = (VerticeQuad){x, y, 0, 1, 0, 0};
+    q[1] = (VerticeQuad){x + w, y, 0, 1, u1, 0};
+    q[2] = (VerticeQuad){x, y + h, 0, 1, 0, v1};
+    q[3] = (VerticeQuad){x + w, y + h, 0, 1, u1, v1};
     LLAMAR(DrawPrimitiveUP_t, dev, DEV_DrawPrimitiveUP)(dev, PT_TRIANGLESTRIP, 2, q, sizeof(VerticeQuad));
 }
 
@@ -490,6 +518,47 @@ static void aplicar_blur(void *dev) {
     soltar(&escena); soltar(&rt); soltar(&z);
 }
 
+/* Guia encima de todo (al final de la escena): se muestra unos segundos despues de cada tecla de
+ * la camara o del blur, o siempre si se fijo con la tecla de la guia. Va arriba al centro, entre
+ * los dos recuadros del marcador, para no tapar paneles del juego. */
+static void dibujar_guia(void *dev) {
+    DWORD ahora = GetTickCount();
+    void *rt = NULL;
+    DescSuperficie8 ds;
+    float w, h;
+    int y;
+    if (!E.guia_fija && (!g_guia.tecla_ms || ahora - g_guia.tecla_ms > GUIA_S)) return;
+    if (!G.tex && FAILED(g_crear_textura(dev, 1024, GUIA_H, 1, 0, 21 /* A8R8G8B8 */, POOL_MANAGED, &G.tex))) {
+        G.tex = NULL; return;
+    }
+    if (!G.bloque && FAILED(LLAMAR(CreateStateBlock_t, dev, DEV_CreateStateBlock)(dev, SBT_ALL, &G.bloque))) {
+        G.bloque = 0; return;
+    }
+    if (ahora - G.pintado_ms > 100) {
+        RectBloqueado8 lr;
+        guia_pintar(G.px, GUIA_W, GUIA_H, &g_guia);
+        if (SUCCEEDED(LLAMAR(LockRect_t, G.tex, TEX_LockRect)(G.tex, 0, &lr, NULL, 0))) {
+            for (y = 0; y < GUIA_H; y++) memcpy((BYTE *)lr.bits + y * lr.pitch, G.px + y * GUIA_W, GUIA_W * 4);
+            LLAMAR(UnlockRect_t, G.tex, TEX_UnlockRect)(G.tex, 0);
+        }
+        G.pintado_ms = ahora;
+    }
+    if (FAILED(LLAMAR(GetSurface_t, dev, DEV_GetRenderTarget)(dev, &rt)) || !rt) return;
+    if (FAILED(LLAMAR(GetDesc_t, rt, SUP_GetDesc)(rt, &ds))) { soltar(&rt); return; }
+    soltar(&rt);
+    LLAMAR(StateBlock_t, dev, DEV_CaptureStateBlock)(dev, G.bloque);
+    estados_base(dev);
+    LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
+    RS(RS_ZENABLE, FALSE); RS(RS_STENCILENABLE, FALSE);
+    RS(RS_ALPHABLENDENABLE, TRUE); RS(RS_SRCBLEND, BLEND_SRCALPHA); RS(RS_DESTBLEND, BLEND_INVSRCALPHA);
+    LLAMAR(SetTexture_t, dev, DEV_SetTexture)(dev, 0, G.tex);
+    TSS(0, TSS_COLOROP, TOP_SELECTARG1); TSS(0, TSS_COLORARG1, TA_TEXTURE);
+    TSS(0, TSS_ALPHAOP, TOP_SELECTARG1); TSS(0, TSS_ALPHAARG1, TA_TEXTURE);
+    w = ds.ancho * 0.38f; h = w * GUIA_H / GUIA_W;
+    quad_en(dev, (ds.ancho - w) * 0.5f, ds.alto * 0.02f, w, h, (float)GUIA_W / 1024.0f, 1.0f);
+    LLAMAR(StateBlock_t, dev, DEV_ApplyStateBlock)(dev, G.bloque);
+}
+
 /* Antes de cada dibujo del juego: el primer dibujo del HUD despues del mundo dispara el efecto. */
 static void antes_de_dibujar(void *dev) {
     if (J.en_efecto) return;
@@ -515,10 +584,16 @@ static void dibujo_diag(const char *que, DWORD prim, UINT a, UINT b, UINT c) {
 }
 
 static HRESULT WINAPI h_BeginScene(void *d) {
-    static int a_activar, a_captura;
+    static int a_activar, a_captura, a_guia;
     if (!J.en_efecto) {
         J.mundo = 0; J.hecho = 0; J.vista_ok = J.proy_ok = 0; J.rt_mundo = NULL;
+        if (juego_en_foco() && flanco(E.t_guia, &a_guia)) {
+            E.guia_fija = !E.guia_fija;
+            WritePrivateProfileStringA("efectos", "guia_fija", E.guia_fija ? "1" : "0", g_ini);
+            g_guia.tecla_ms = GetTickCount();
+        }
         if (juego_en_foco() && flanco(E.t_activar, &a_activar)) {
+            g_guia.tecla_ms = GetTickCount();
             if (GetAsyncKeyState(VK_SHIFT) & 0x8000) {
                 E.ver_mascara = !E.ver_mascara;
                 WritePrivateProfileStringA("efectos", "ver_mascara", E.ver_mascara ? "1" : "0", g_ini);
@@ -527,6 +602,7 @@ static HRESULT WINAPI h_BeginScene(void *d) {
                 WritePrivateProfileStringA("efectos", "blur", E.activo ? "1" : "0", g_ini);
             }
         }
+        g_guia.blur_activo = E.activo; g_guia.t_blur = E.t_activar; g_guia.t_guia = E.t_guia;
         C.cuadro++;
         if (E.diagnostico && !C.capturando && flanco(E.t_captura, &a_captura)) {
             char ruta[MAX_PATH];
@@ -543,6 +619,12 @@ static HRESULT WINAPI h_BeginScene(void *d) {
 }
 
 static HRESULT WINAPI h_EndScene(void *d) {
+    if (!J.en_efecto) {
+        J.en_efecto = 1;
+        __try { dibujar_guia(d); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { E.guia_fija = 0; g_guia.tecla_ms = 0; }
+        J.en_efecto = 0;
+    }
     if (C.capturando && !J.en_efecto) {
         int i;
         cap("EndScene: %d dibujos. Llamadas por funcion del device:", C.dibujos);
@@ -795,9 +877,10 @@ int efectos_iniciar(const char *ini) {
         }
         if (gancho && strlen(lista) < sizeof lista - 8) sprintf(lista + strlen(lista), " %d", i);
     }
+    g_guia.blur_ok = 1;
     anotar("efectos: %d funciones con hotpatch, %d por puntero; ganchos sin poner:%s", n_hot, n_vt,
            lista[0] ? lista : " ninguno");
-    anotar("efectos: blur %s (%s = activar/desactivar, Shift+%s = ver la mascara)",
-           E.activo ? "activo" : "apagado", "F2", "F2");
+    anotar("efectos: blur %s (tecla 0x%02X; con Shift = ver la mascara); guia en pantalla: tecla 0x%02X",
+           E.activo ? "activo" : "apagado", E.t_activar, E.t_guia);
     return 1;
 }

@@ -33,7 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define VERSION "1.2.0-dev"
+#include "camara_vs.h"
+
+#define VERSION CAMARA_VS_VERSION
 #define M 256.0f
 
 /* ---------------------------------------------------------------- firmas */
@@ -112,7 +114,7 @@ static DWORD leer_dato(const Firma *f, int *ok) {
 
 char g_log[MAX_PATH];
 static char g_ini[MAX_PATH];
-int efectos_iniciar(const char *ini);
+EstadoGuia g_guia;
 
 void anotar(const char *fmt, ...) {
     FILE *f = fopen(g_log, "a");
@@ -193,6 +195,10 @@ static BYTE *g_estadio;          /* NULL si no se reconocio la funcion de visibi
 #define PLANO_LEJANO  60000.0f   /* el juego usa 16000 (~62 m): las tomas bajas miran mas lejos */
 #define ZOOM_LATERAL  650.0f
 #define MIRA_TECHO_M  8.0f       /* en los globos la toma no termina mirando el cielo */
+#define ADELANTO_MAX_M 6.0f      /* tope del adelanto del punto de mira */
+#define TIRO_MS       20.0f      /* pelota mas rapida que esto (m/s): disparo o pelotazo */
+#define TIRO_S        1.2f       /* s que dura la toma de disparo despues del ultimo pique rapido */
+#define ZOOM_TIRO     0.85f      /* en los disparos el zoom se abre un poco en vez de perseguir */
 
 enum { JUEGO, LATERAL, ARQUERO };
 
@@ -208,6 +214,7 @@ static int g_estadio_puesto = -1;
 static struct {
     int iniciado, modo_ant, dueno_ant;
     float s_obj[3], s_ojo[3], v_obj[3], v_ojo[3], vel_f[3], pel_ant[3], giro, posesion, en_manos_t, lado, lado_t;
+    float adel[3], v_adel[3], tiro_t, zoom_k;
     LARGE_INTEGER antes;
 } S;
 
@@ -257,24 +264,31 @@ static void poner_estadio(int completo) {
 }
 
 static void teclas(void) {
+    int t[9], i;
     if (!juego_en_foco()) return;
-    if (tecla(A.t_activar)) {
+    /* se leen todas antes (flancos) para saber si se toco alguna: la guia se muestra unos segundos */
+    {
+        const int vk[9] = {A.t_activar, A.t_altura_menos, A.t_altura_mas, A.t_dist_menos, A.t_dist_mas,
+                           A.t_zoom_abrir, A.t_zoom_cerrar, A.t_retraso, A.t_estandar};
+        for (i = 0; i < 9; i++) if ((t[i] = tecla(vk[i])) != 0) g_guia.tecla_ms = GetTickCount();
+    }
+    if (t[0]) {
         A.activa = !A.activa; S.iniciado = 0;
         WritePrivateProfileStringA("camara", "activa", A.activa ? "1" : "0", g_ini);
     }
-    if (tecla(A.t_altura_menos)) { A.altura = A.altura > 2.0f ? A.altura - 1.0f : 1.0f; ini_guardar("altura", A.altura); }
-    if (tecla(A.t_altura_mas))   { A.altura += 1.0f; ini_guardar("altura", A.altura); }
-    if (tecla(A.t_dist_menos))   { A.distancia = A.distancia > 6.0f ? A.distancia - 2.0f : 4.0f; ini_guardar("distancia", A.distancia); }
-    if (tecla(A.t_dist_mas))     { A.distancia += 2.0f; ini_guardar("distancia", A.distancia); }
-    if (tecla(A.t_zoom_abrir))   { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
-    if (tecla(A.t_zoom_cerrar))  { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
-    if (tecla(A.t_retraso)) {
+    if (t[1]) { A.altura = A.altura > 2.0f ? A.altura - 1.0f : 1.0f; ini_guardar("altura", A.altura); }
+    if (t[2]) { A.altura += 1.0f; ini_guardar("altura", A.altura); }
+    if (t[3]) { A.distancia = A.distancia > 6.0f ? A.distancia - 2.0f : 4.0f; ini_guardar("distancia", A.distancia); }
+    if (t[4]) { A.distancia += 2.0f; ini_guardar("distancia", A.distancia); }
+    if (t[5]) { A.zoom = A.zoom * 0.9f > 200.0f ? A.zoom * 0.9f : 200.0f; ini_guardar("zoom", A.zoom); }
+    if (t[6]) { A.zoom = A.zoom / 0.9f < 4000.0f ? A.zoom / 0.9f : 4000.0f; ini_guardar("zoom", A.zoom); }
+    if (t[7]) {
         static const float r[] = {0.2f, 0.35f, 0.6f, 1.0f};
         int i, sig = 1;
         for (i = 0; i < 4; i++) if (fabsf(A.retraso - r[i]) < 0.01f) sig = (i + 1) % 4;
         A.retraso = r[sig]; ini_guardar("retraso", A.retraso);
     }
-    if (tecla(A.t_estandar)) {
+    if (t[8]) {
         unsigned i;
         for (i = 0; i < N_ESTANDAR; i++) ini_guardar(ESTANDAR[i].clave, ESTANDAR[i].valor);
         leer_ajustes(); S.iniciado = 0;
@@ -285,7 +299,7 @@ static void teclas(void) {
 static int calcular(void) {
     float pel[3], ant[3], vel[3], q_obj[3], q_ojo[3], mira[3];
     float dt, rapidez, retraso, k, lado, lado_cancha, relajado, q_giro, riel, sep, dist, zoom;
-    int fase, dueno, modo, en_manos, i;
+    int fase, dueno, modo, en_manos, i, va;
     LARGE_INTEGER ahora, frec;
     BYTE *b = (BYTE *)(UINT_PTR)*g_pelota;
 
@@ -309,17 +323,23 @@ static int calcular(void) {
     if (fabsf(pel[0] - S.pel_ant[0]) + fabsf(pel[2] - S.pel_ant[2]) > 8.0f * M) S.iniciado = 0;
     memcpy(S.pel_ant, pel, sizeof pel);
     for (i = 0; i < 3; i++) vel[i] = (pel[i] - ant[i]) * 60.0f;   /* unidades por segundo */
-    /* La anticipacion usa la velocidad filtrada: la cruda salta con cada toque. */
-    if (!S.iniciado) memcpy(S.vel_f, vel, sizeof vel);
-    k = 1.0f - expf(-dt / 0.15f);
+    /* La anticipacion usa la velocidad filtrada: la cruda salta con cada toque, sobre todo cuando
+     * la pelota llega al pie (cambia de golpe de direccion y rapidez). */
+    if (!S.iniciado) { memcpy(S.vel_f, vel, sizeof vel); S.zoom_k = 1.0f; S.tiro_t = 0.0f; }
+    k = 1.0f - expf(-dt / 0.35f);
     for (i = 0; i < 3; i++) S.vel_f[i] += (vel[i] - S.vel_f[i]) * k;
     rapidez = sqrtf(vel[0] * vel[0] + vel[2] * vel[2]) / M;      /* m/s en el plano */
+    /* Disparo o pelotazo: no se persigue la pelota; se abre un poco el zoom. */
+    S.tiro_t = rapidez > TIRO_MS ? TIRO_S : (S.tiro_t > dt ? S.tiro_t - dt : 0.0f);
     fase = *g_fase;
     dueno = *g_toque;
 
     /* Tomas: lateral en tercera persona; con el arquero (pelota en sus manos o saque de arco)
      * va la camara del juego. */
-    if (fase_saque(fase) && fabsf(pel[2]) > (MEDIO_ANCHO_M - 4) * M && fabsf(pel[0]) < (MEDIO_LARGO_M - 3) * M)
+    /* Lateral en tercera persona solo del lado de la camara; del lado lejano, la toma de siempre. */
+    lado = S.lado != 0.0f ? S.lado : (g_juego[2] >= g_juego[5] ? 1.0f : -1.0f);
+    if (fase_saque(fase) && fabsf(pel[2]) > (MEDIO_ANCHO_M - 4) * M && fabsf(pel[0]) < (MEDIO_LARGO_M - 3) * M &&
+        pel[2] * lado > 0.0f)
         modo = LATERAL;
     else if (fase_saque(fase) && fabsf(pel[0]) > (MEDIO_LARGO_M - 8) * M && fabsf(pel[2]) < (MEDIO_ANCHO_M - 4) * M)
         modo = ARQUERO;
@@ -333,17 +353,28 @@ static int calcular(void) {
     S.en_manos_t = en_manos ? S.en_manos_t + dt : 0.0f;
     S.modo_ant = modo;
 
-    q_obj[0] = pel[0] + S.vel_f[0] * A.adelanto;
+    /* Adelanto con su propio resorte y con tope: sin saltos cuando la pelota llega al pie. */
+    {
+        float meta[3] = {S.vel_f[0] * A.adelanto, 0.0f, S.vel_f[2] * A.adelanto}, largo;
+        if (S.tiro_t > 0.0f) meta[0] = meta[2] = 0.0f;
+        largo = sqrtf(meta[0] * meta[0] + meta[2] * meta[2]);
+        if (largo > ADELANTO_MAX_M * M) { meta[0] *= ADELANTO_MAX_M * M / largo; meta[2] *= ADELANTO_MAX_M * M / largo; }
+        if (!S.iniciado) { memcpy(S.adel, meta, sizeof meta); memset(S.v_adel, 0, sizeof S.v_adel); }
+        for (i = 0; i < 3; i += 2) resorte(&S.adel[i], &S.v_adel[i], meta[i], 0.5f, dt);
+    }
+    q_obj[0] = pel[0] + S.adel[0];
     q_obj[1] = 0.5f * pel[1] - 0.5f * M;
-    q_obj[2] = pel[2] + S.vel_f[2] * A.adelanto;
+    q_obj[2] = pel[2] + S.adel[2];
     if (modo == LATERAL) {
         float afuera = pel[2] > 0 ? 1.0f : -1.0f;
         q_obj[0] = pel[0]; q_obj[1] = -1.2f * M; q_obj[2] = pel[2] - afuera * 15.0f * M;
     }
     if (!S.iniciado) { memcpy(S.s_obj, q_obj, sizeof q_obj); memset(S.v_obj, 0, sizeof S.v_obj); }
     retraso = modo == JUEGO ? A.retraso : 0.45f;
-    /* Movimientos chicos flotan; si la pelota se escapa del cuadro el travelling acelera. */
-    {
+    /* Movimientos chicos flotan; si la pelota se escapa del cuadro el travelling acelera, salvo en
+     * los disparos: ahi la camara va mas tranquila y el zoom abierto se encarga del cuadro. */
+    if (S.tiro_t > 0.0f) retraso *= 1.5f;
+    else {
         float err = (fabsf(q_obj[0] - S.s_obj[0]) + fabsf(q_obj[2] - S.s_obj[2])) / M;
         retraso /= 1.0f + (err > 4.0f ? (err - 4.0f) / 5.0f : 0.0f);
     }
@@ -389,12 +420,24 @@ static int calcular(void) {
     /* Zoom compensado por la distancia real: jugadores de tamano parecido en toda la cancha. */
     dist = sqrtf((S.s_ojo[0] - mira[0]) * (S.s_ojo[0] - mira[0]) + (S.s_ojo[1] - mira[1]) * (S.s_ojo[1] - mira[1]) +
                  (S.s_ojo[2] - mira[2]) * (S.s_ojo[2] - mira[2])) / (M * DIST_REF_M);
-    zoom = modo == LATERAL ? ZOOM_LATERAL : A.zoom * clampf(dist, 0.6f, 1.8f);
+    S.zoom_k += ((S.tiro_t > 0.0f ? ZOOM_TIRO : 1.0f) - S.zoom_k) * (1.0f - expf(-dt / 0.5f));
+    zoom = modo == LATERAL ? ZOOM_LATERAL : A.zoom * clampf(dist, 0.6f, 1.8f) * S.zoom_k;
     memcpy(g_nuevo, S.s_ojo, 12); memcpy(g_nuevo + 3, mira, 12);
     g_nuevo[6] = zoom; g_nuevo[7] = PLANO_LEJANO;
 
     /* Solo con la pelota en juego o parada; repeticiones y festejos quedan del juego. */
-    return A.activa && b && fase_con_camara(fase) && modo != ARQUERO;
+    va = A.activa && b && fase_con_camara(fase) && modo != ARQUERO;
+    {
+        const float *usada = va ? g_nuevo : g_juego;
+        EstadoGuia *e = &g_guia;
+        e->camara_activa = A.activa; e->en_uso = va; e->modo = modo; e->tiro = S.tiro_t > 0.0f;
+        e->altura = A.altura; e->distancia = A.distancia; e->zoom = A.zoom; e->retraso = A.retraso;
+        for (i = 0; i < 3; i++) { e->ojo[i] = usada[i] / M; e->mira[i] = usada[3 + i] / M; e->pelota[i] = pel[i] / M; }
+        e->t_activar = A.t_activar; e->t_altura_menos = A.t_altura_menos; e->t_altura_mas = A.t_altura_mas;
+        e->t_dist_menos = A.t_dist_menos; e->t_dist_mas = A.t_dist_mas; e->t_zoom_abrir = A.t_zoom_abrir;
+        e->t_zoom_cerrar = A.t_zoom_cerrar; e->t_retraso = A.t_retraso; e->t_estandar = A.t_estandar;
+    }
+    return va;
 }
 
 /* Struct de camara <-> buffer: ojo xyz, objetivo xyz, zoom, plano lejano. */
@@ -523,6 +566,7 @@ static DWORD WINAPI iniciar(LPVOID nada) {
     }
     S.dueno_ant = -1; S.modo_ant = JUEGO;
     if (!enganchar()) { anotar("no se pudo enganchar la funcion de vista"); return 0; }
+    g_guia.camara_ok = 1;
     anotar("listo. %s = activar/desactivar (ahora %s)", "F9", A.activa ? "activa" : "apagada");
     return 0;
 }
