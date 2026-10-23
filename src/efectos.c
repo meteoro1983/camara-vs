@@ -180,7 +180,7 @@ static const GUID IID_Textura8 = {0xe4cdd575, 0x2866, 0x4f01, {0xb1, 0x2e, 0x7e,
 
 #define N_CAJAS 6
 static struct {
-    int activo, bruma, color, ver_mascara, diagnostico, guia_fija;
+    int activo, bruma, color, ver_mascara, diagnostico, guia_fija, publico;
     float saturacion, contraste, rgb[3];      /* color grading */
     int t_activar, t_captura, t_guia;
     float fuerza, bruma_fuerza;
@@ -226,6 +226,7 @@ static void leer_ajustes(void) {
     char s[64];
     E.activo = GetPrivateProfileIntA("efectos", "blur", 1, g_ini);
     E.bruma = GetPrivateProfileIntA("efectos", "bruma", 1, g_ini);
+    E.publico = GetPrivateProfileIntA("efectos", "publico_colores", 1, g_ini);
     E.color = GetPrivateProfileIntA("efectos", "color", 1, g_ini);
     GetPrivateProfileStringA("efectos", "color_saturacion", "1.12", s, sizeof s, g_ini);
     E.saturacion = (float)atof(s);
@@ -950,8 +951,193 @@ static HRESULT WINAPI h_SetPixelShader(void *d, DWORD ps) {
     return ((SetPixelShader_t)g_orig[DEV_SetPixelShader])(d, ps);
 }
 
+/* ---------------------------------------------------------------- texturas del publico
+ * Etapa de estudio: se registran las texturas que crea el juego del tamano del publico (1024x256
+ * nuestro, 256x64 original) y como las escribe (LockRect/UnlockRect), para reemplazar despues sus
+ * pixeles por los colores verdaderos (el juego tine una parte de la paleta al convertirla). */
+static BYTE *g_d3d8, *g_d3d8_fin;
+#define EN_D3D8(p) ((BYTE *)(p) >= g_d3d8 && (BYTE *)(p) < g_d3d8_fin)
+static int hotpatcheable(const BYTE *fn);
+static int hotpatch(BYTE *fn, void *gancho);
+static BYTE *original_en_d3d8(BYTE *fn, BYTE ***ranura, int prof);
+typedef HRESULT (WINAPI *TexLock_t)(void *, UINT, RectBloqueado8 *, const RECT *, DWORD);
+typedef HRESULT (WINAPI *TexUnlock_t)(void *, UINT);
+static TexLock_t g_tex_lock;
+static TexUnlock_t g_tex_unlock;
+#define MAX_PUB 4096
+static struct { void *tex; UINT w, h, fmt; int lock_n; RectBloqueado8 lr; } P[MAX_PUB];
+static int g_n_pub, g_creadas;
+
+/* Recoloreo del publico: el juego arma sus propias paletas por tribuna a partir de la posicion de
+ * cada indice (rampas de ropa) y tine todo. publico_vs.dat (de publico-vs/armar_publico.py) trae
+ * los indices de cada cuadro y la paleta verdadera: se reconoce el cuadro (los pixeles con el mismo
+ * indice tienen el mismo color escrito) y se reescribe con los colores verdaderos, conservando solo
+ * el brillo de la tribuna. */
+typedef struct { DWORD id; BYTE pal[256][3]; const BYTE *idx; } CuadroPub;
+static CuadroPub *g_cuadros; static int g_n_cuadros; static UINT g_pub_w, g_pub_h;
+static BYTE *g_pub_dat;
+
+static void cargar_publico(void) {
+    char ruta[MAX_PATH]; FILE *f; long tam; DWORD nf, k, c;
+    BYTE *p;
+    strcpy(ruta, g_ini); strcpy(strrchr(ruta, '\\') + 1, "publico_vs.dat");
+    if (!(f = fopen(ruta, "rb"))) return;
+    fseek(f, 0, SEEK_END); tam = ftell(f); fseek(f, 0, SEEK_SET);
+    g_pub_dat = malloc(tam);
+    if (!g_pub_dat || fread(g_pub_dat, 1, tam, f) != (size_t)tam || memcmp(g_pub_dat, "PVS1", 4)) {
+        fclose(f); free(g_pub_dat); g_pub_dat = NULL; return;
+    }
+    fclose(f);
+    p = g_pub_dat + 4; nf = *(DWORD *)p; p += 4;
+    g_cuadros = calloc(64 * nf + 1, sizeof(CuadroPub));
+    for (k = 0; k < nf; k++) {
+        DWORD id = ((DWORD *)p)[0], n = ((DWORD *)p)[1];
+        g_pub_w = ((DWORD *)p)[2]; g_pub_h = ((DWORD *)p)[3]; p += 16;
+        for (c = 0; c < n && g_n_cuadros < 64 * (int)nf; c++) {
+            CuadroPub *q = &g_cuadros[g_n_cuadros++];
+            q->id = id; memcpy(q->pal, p, 768); q->idx = p + 768 + c * g_pub_w * g_pub_h;
+        }
+        p += 768 + n * g_pub_w * g_pub_h;
+    }
+    anotar("publico: %d cuadros de %ux%u para recolorear", g_n_cuadros, g_pub_w, g_pub_h);
+}
+
+static int cmp_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b; return x < y ? -1 : x > y;
+}
+
+static void recolorear(BYTE *bits, int pitch) {
+    const UINT W = g_pub_w, H = g_pub_h, PASO = 8;
+    static double s1[256][3], s2[256][3], cnt[256];
+    static float ratios[(1024 / 8) * (256 / 8)];
+    int c, mejor = -1, nr = 0; double mejor_var = 1e30, ratio;
+    UINT x, y;
+    for (c = 0; c < g_n_cuadros; c++) {
+        const BYTE *ix = g_cuadros[c].idx;
+        int malos = 0, total = 0, j, n = 0; double var = 0;
+        memset(s1, 0, sizeof s1); memset(s2, 0, sizeof s2); memset(cnt, 0, sizeof cnt);
+        for (y = 0; y < H; y += PASO) for (x = 0; x < W; x += PASO) {
+            const BYTE *px = bits + y * pitch + 4 * x; BYTE i = ix[y * W + x];
+            int op = px[3] > 0; total++;
+            if (op != (i != 255)) { malos++; continue; }
+            if (!op) continue;
+            for (j = 0; j < 3; j++) { s1[i][j] += px[2 - j]; s2[i][j] += (double)px[2 - j] * px[2 - j]; }
+            cnt[i]++; n++;
+        }
+        if (malos * 100 > total * 3 || !n) continue;
+        for (j = 0; j < 256; j++) if (cnt[j])
+            var += s2[j][0] - s1[j][0] * s1[j][0] / cnt[j] + s2[j][1] - s1[j][1] * s1[j][1] / cnt[j] + s2[j][2] - s1[j][2] * s1[j][2] / cnt[j];
+        var /= n;
+        if (var < mejor_var) { mejor_var = var; mejor = c; }
+    }
+    if (mejor < 0 || mejor_var > 60) return;            /* no es una textura de nuestro publico */
+    {
+        const CuadroPub *q = &g_cuadros[mejor];
+        for (y = 0; y < H; y += PASO) for (x = 0; x < W; x += PASO) {
+            const BYTE *px = bits + y * pitch + 4 * x; BYTE i = q->idx[y * W + x];
+            float lo, lw;
+            if (!px[3] || i == 255) continue;
+            lo = 0.299f * q->pal[i][0] + 0.587f * q->pal[i][1] + 0.114f * q->pal[i][2];
+            lw = 0.299f * px[2] + 0.587f * px[1] + 0.114f * px[0];
+            if (lo > 8) ratios[nr++] = lw / lo;
+        }
+        qsort(ratios, nr, sizeof(float), cmp_float);
+        ratio = nr ? ratios[nr / 2] : 1.0;
+        if (ratio < 0.6) ratio = 0.6; if (ratio > 1.15) ratio = 1.15;
+        for (y = 0; y < H; y++) {
+            BYTE *px = bits + y * pitch; const BYTE *ix = q->idx + y * W;
+            for (x = 0; x < W; x++, px += 4) {
+                BYTE i = ix[x]; double v;
+                if (!px[3] || i == 255) continue;
+                v = q->pal[i][2] * ratio; px[0] = (BYTE)(v > 255 ? 255 : v);
+                v = q->pal[i][1] * ratio; px[1] = (BYTE)(v > 255 ? 255 : v);
+                v = q->pal[i][0] * ratio; px[2] = (BYTE)(v > 255 ? 255 : v);
+            }
+        }
+        if (E.diagnostico) anotar("publico: recoloreado cuadro %d de %lu (varianza %.1f, brillo %.2f)",
+                                  mejor % 33, q->id, mejor_var, ratio);
+    }
+}
+
+static int es_publico(UINT w, UINT h) { return (w == 1024 && h == 256) || (w == 256 && h == 64) || (w == 2048 && h == 256); }
+
+static int buscar_pub(void *t) {
+    int i;
+    for (i = 0; i < g_n_pub; i++) if (P[i].tex == t) return i;
+    return -1;
+}
+
+static HRESULT WINAPI h_TexLock(void *t, UINT nivel, RectBloqueado8 *lr, const RECT *r, DWORD flags) {
+    HRESULT hr = g_tex_lock(t, nivel, lr, r, flags);
+    int i;
+    if (!J.en_efecto && SUCCEEDED(hr) && nivel == 0 && (i = buscar_pub(t)) >= 0) {
+        P[i].lock_n++; P[i].lr = *lr;
+        if (E.diagnostico && P[i].lock_n <= 2) anotar("publico: Lock tex %p (%ux%u fmt %u) flags %lx pitch %d", t, P[i].w, P[i].h, P[i].fmt, flags, lr->pitch);
+    }
+    return hr;
+}
+
+static HRESULT WINAPI h_TexUnlock(void *t, UINT nivel) {
+    int i;
+    if (E.diagnostico && !J.en_efecto && nivel == 0 && (i = buscar_pub(t)) >= 0 && P[i].lock_n == 1) {
+        /* volcado de estudio: tex_<n>.raw (BGRA 1024x256) junto al log */
+        static int volcadas;
+        if (volcadas < 200) {
+            char ruta[MAX_PATH]; FILE *f; UINT y;
+            strcpy(ruta, g_log); strcpy(strrchr(ruta, '\\') + 1, "publico_volcado");
+            CreateDirectoryA(ruta, NULL);
+            sprintf(ruta + strlen(ruta), "\\tex_%03d.raw", i);
+            if ((f = fopen(ruta, "wb")) != NULL) {
+                for (y = 0; y < P[i].h; y++) fwrite((const BYTE *)P[i].lr.bits + y * P[i].lr.pitch, 4, P[i].w, f);
+                fclose(f); volcadas++;
+            }
+        }
+    }
+    if (E.publico && g_n_cuadros && !J.en_efecto && nivel == 0 && (i = buscar_pub(t)) >= 0 && P[i].lock_n == 1 &&
+        P[i].w == g_pub_w && P[i].h == g_pub_h && P[i].fmt == 21) {
+        __try { recolorear(P[i].lr.bits, P[i].lr.pitch); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { anotar("publico: excepcion al recolorear"); E.publico = 0; }
+    }
+    if (E.diagnostico && !J.en_efecto && nivel == 0 && (i = buscar_pub(t)) >= 0 && P[i].lock_n <= 2) {
+        const DWORD *px = (const DWORD *)P[i].lr.bits;
+        UINT y = P[i].h * 3 / 4, x = P[i].w / 4;
+        anotar("publico: Unlock tex %p primeros pixeles %08lx %08lx %08lx %08lx (fila %u: %08lx)",
+               t, px[0], px[1], px[2], px[3], y, *(const DWORD *)((const BYTE *)P[i].lr.bits + y * P[i].lr.pitch + 4 * x));
+    }
+    return g_tex_unlock(t, nivel);
+}
+
+static HRESULT WINAPI h_CreateTexture(void *d, UINT w, UINT h, UINT niveles, DWORD uso, UINT fmt, UINT pool, void **tex) {
+    HRESULT hr = ((CreateTexture_t)g_orig[DEV_CreateTexture])(d, w, h, niveles, uso, fmt, pool, tex);
+    if (J.en_efecto) return hr;
+    g_creadas++;
+    if (SUCCEEDED(hr) && *tex) {
+        /* el juego libera texturas y crea otras en la misma direccion: la lista se actualiza siempre */
+        int i = buscar_pub(*tex);
+        if (i < 0 && es_publico(w, h) && g_n_pub < MAX_PUB) i = g_n_pub++;
+        if (i >= 0) {
+            if (es_publico(w, h)) { P[i].tex = *tex; P[i].w = w; P[i].h = h; P[i].fmt = fmt; P[i].lock_n = 0; }
+            else P[i].tex = NULL;
+        }
+        if (E.diagnostico && es_publico(w, h))
+            anotar("publico: CreateTexture %ux%u niveles %u fmt %u pool %u tex %p (total creadas %d)", w, h, niveles, fmt, pool, *tex, g_creadas);
+    }
+    if (SUCCEEDED(hr) && *tex && !g_tex_lock) {          /* primera textura: enganchar Lock/Unlock */
+        BYTE **r1 = NULL, **r2 = NULL;
+        /* si Kitserver ya los engancho, se sigue su cadena hasta las funciones reales de d3d8 */
+        BYTE *lk = original_en_d3d8((BYTE *)VT(*tex)[TEX_LockRect], &r1, 0);
+        BYTE *ul = original_en_d3d8((BYTE *)VT(*tex)[TEX_UnlockRect], &r2, 0);
+        if (EN_D3D8(lk) && EN_D3D8(ul) && hotpatcheable(lk) && hotpatcheable(ul)) {
+            g_tex_lock = (TexLock_t)(lk + 2); g_tex_unlock = (TexUnlock_t)(ul + 2);
+            hotpatch(lk, h_TexLock); hotpatch(ul, h_TexUnlock);
+            anotar("publico: Lock/Unlock de texturas enganchados");
+        } else anotar("publico: no pude enganchar Lock/Unlock de texturas");
+    }
+    return hr;
+}
+
 static const struct { int idx; void *fn; } GANCHOS[] = {
-    {DEV_Reset, h_Reset}, {DEV_SetRenderTarget, h_SetRenderTarget},
+    {DEV_Reset, h_Reset}, {DEV_CreateTexture, h_CreateTexture}, {DEV_SetRenderTarget, h_SetRenderTarget},
     {DEV_BeginScene, h_BeginScene}, {DEV_EndScene, h_EndScene}, {DEV_Clear, h_Clear},
     {DEV_SetTransform, h_SetTransform}, {DEV_SetRenderState, h_SetRenderState}, {DEV_SetTexture, h_SetTexture},
     {DEV_DrawPrimitive, h_DrawPrimitive}, {DEV_DrawIndexedPrimitive, h_DrawIndexedPrimitive},
@@ -1050,6 +1236,7 @@ int efectos_iniciar(const char *ini) {
     char lista[512] = "";
     strcpy(g_ini, ini);
     leer_ajustes();
+    if (E.publico) cargar_publico();
     if (!(dev = device_del_juego())) { anotar("efectos: no consegui el device de D3D8"); return 0; }
     if (!(g_d3d8 = (BYTE *)GetModuleHandleA("d3d8.dll"))) return 0;
     nt = (IMAGE_NT_HEADERS *)(g_d3d8 + ((IMAGE_DOS_HEADER *)g_d3d8)->e_lfanew);
@@ -1069,9 +1256,13 @@ int efectos_iniciar(const char *ini) {
     g_stubs = VirtualAlloc(NULL, DEV_N * 12, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!g_stubs) return 0;
     for (i = 0; i < DEV_N; i++) {
-        BYTE *st = g_stubs + i * 12, *fn = i == DEV_Reset ? reset : (BYTE *)vt[i];
+        BYTE *st = g_stubs + i * 12, *fn = i == DEV_Reset ? reset : i == DEV_CreateTexture ? crear : (BYTE *)vt[i];
         void *gancho = NULL;
         for (k = 0; k < N_GANCHOS; k++) if (GANCHOS[k].idx == i) gancho = GANCHOS[k].fn;
+        if (gancho && !EN_D3D8(fn)) {            /* ya enganchada por Kitserver: ir a la real */
+            BYTE **r = NULL, *real = original_en_d3d8(fn, &r, 0);
+            if (real && hotpatcheable(real)) fn = real;
+        }
         st[0] = 0xFF; st[1] = 0x05; *(volatile LONG **)(st + 2) = &g_cuenta[i];
         st[6] = 0xFF; st[7] = 0x25; *(void ***)(st + 8) = &g_destino[i];
         /* antes de activar el salto, el stub ya tiene que llevar a la original */
@@ -1094,6 +1285,8 @@ int efectos_iniciar(const char *ini) {
         }
         if (gancho && strlen(lista) < sizeof lista - 8) sprintf(lista + strlen(lista), " %d", i);
     }
+    /* nuestras texturas propias no pasan por el gancho */
+    if (g_orig[DEV_CreateTexture]) g_crear_textura = (CreateTexture_t)g_orig[DEV_CreateTexture];
     g_guia.blur_ok = 1;
     anotar("efectos: %d funciones con hotpatch, %d por puntero; ganchos sin poner:%s", n_hot, n_vt,
            lista[0] ? lista : " ninguno");
