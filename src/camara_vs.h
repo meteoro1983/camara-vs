@@ -7,7 +7,7 @@
 
 #include <windows.h>
 
-#define CAMARA_VS_VERSION "1.2.0-dev"
+#define CAMARA_VS_VERSION "1.2.0"
 
 enum { GUIA_JUEGO, GUIA_LATERAL, GUIA_ARQUERO };
 
