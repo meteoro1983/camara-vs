@@ -665,7 +665,8 @@ static void *textura_vineta(void *dev) {
         for (y = 0; y < 64; y++) for (x = 0; x < 64; x++) {
             float dx = (x + 0.5f) / 32.0f - 1.0f, dy = (y + 0.5f) / 32.0f - 1.0f;
             float r = sqrtf(dx * dx * 0.8f + dy * dy) / 1.25f, t = r < 0.45f ? 0.0f : (r - 0.45f) / 0.55f;
-            float v = 1.0f - E.vineta * (t > 1 ? 1 : t * t * (3 - 2 * t));
+            /* arriba (reflectores, cielo) la vineta va a la mitad: no apaga las luces */
+            float v = 1.0f - E.vineta * (dy < 0 ? 0.5f : 1.0f) * (t > 1 ? 1 : t * t * (3 - 2 * t));
             DWORD c = 0xFF000000u;
             int j;
             for (j = 0; j < 3; j++) {                       /* x ganancia RGB / 2 (el shader hace _x2) */
@@ -708,16 +709,31 @@ static void leer_escena(void *dev, UINT w8, UINT h8) {
     RS(RS_ALPHABLENDENABLE, FALSE);
     quad(dev, w8, h8, 0, 0);
     if (FAILED(((SupLock_t)VT(R.lectura)[9])(R.lectura, &lr, NULL, 0x10 /* READONLY */))) return;
-    /* brillo medio del tercio de arriba (cielo / tribunas altas): de noche es muy oscuro */
-    for (y = 0; y < h8 / 3; y++) {
-        const BYTE *p = (const BYTE *)lr.bits + y * lr.pitch;
-        for (x = 0; x < w8; x++, p += 4) { suma += 0.299 * p[2] + 0.587 * p[1] + 0.114 * p[0]; n++; }
-    }
-    if (n) {
-        double m = suma / n;
-        int antes = g_noche;
-        if (m < 40) g_noche = 1; else if (m > 55) g_noche = 0;     /* con histeresis */
-        if (g_noche != antes) anotar("efectos: %s (brillo medio arriba %.0f)", g_noche ? "noche" : "dia", m);
+    /* brillo MEDIANO del tercio de arriba (cielo / techo / tribunas altas): de noche es oscuro aunque
+     * haya reflectores y tribunas iluminadas (el promedio se iba arriba con esas luces) */
+    {
+        static UINT hist[256]; static int primera = 1;
+        UINT acum = 0, med = 0;
+        memset(hist, 0, sizeof hist);
+        for (y = 0; y < h8 / 3; y++) {
+            const BYTE *p = (const BYTE *)lr.bits + y * lr.pitch;
+            for (x = 0; x < w8; x++, p += 4) { hist[(77 * p[2] + 150 * p[1] + 29 * p[0]) >> 8]++; n++; }
+        }
+        for (med = 0; med < 255 && (acum += hist[med]) < n / 2; med++) {}
+        if (n && med >= 8) {                     /* las pantallas negras de transicion no cuentan */
+            /* ventana de ~15 s: de dia nunca baja de ~47 (aunque la camara mire el pasto); de noche,
+             * cada tanto el cielo oscuro da < 36 */
+            static BYTE ventana[45]; static int pos, llenos;
+            int antes = g_noche, i2, minimo = 255, maximo = 0;
+            ventana[pos] = (BYTE)med; pos = (pos + 1) % 45; if (llenos < 45) llenos++;
+            for (i2 = 0; i2 < llenos; i2++) { if (ventana[i2] < minimo) minimo = ventana[i2]; if (ventana[i2] > maximo) maximo = ventana[i2]; }
+            if (minimo < 36) g_noche = 1; else if (minimo > 44) g_noche = 0;
+            if (g_noche != antes || primera)
+                anotar("efectos: %s (brillo mediano arriba %u)", g_noche ? "noche" : "dia", med);
+            primera = 0;
+            if (E.diagnostico) { static int c; if (++c % 6 == 0) anotar("efectos: brillo mediano arriba %u (%s)", med, g_noche ? "noche" : "dia"); }
+        }
+        (void)suma;
     }
     /* reflectores: maximos locales muy brillantes */
     g_n_luces = 0;
@@ -918,7 +934,7 @@ static void aplicar_blur(void *dev) {
     /* Cielo: degradado suave donde no hay profundidad (mas azul de dia, mas profundo de noche) */
     if (!E.ver_mascara && E.cielo && E.color) {
         VerticeColor q[4];
-        DWORD arriba = g_noche ? 0x70040814u : 0x50183A80u, abajo = arriba & 0x00FFFFFF;
+        DWORD arriba = g_noche ? 0x30040814u : 0x50183A80u, abajo = arriba & 0x00FFFFFF;   /* de noche, apenas */
         float x1 = (float)ds.ancho - 0.5f, y1 = (float)ds.alto * 0.7f;
         LLAMAR(Clear_t, dev, DEV_Clear)(dev, 0, NULL, CLEAR_STENCIL, 0, 1.0f, 0);
         LLAMAR(SetVertexShader_t, dev, DEV_SetVertexShader)(dev, FVF_XYZRHW | FVF_TEX1);
